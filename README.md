@@ -29,7 +29,7 @@ TurtleTree.  TurtleTrees can be read or write optimized by allocating
 memory to either page caching (reads) or update/checkpoint buffering
 (writes) without changing their durable structure.  This means
 applications can pay to optimize the most important operations
-dynamically_, without locking in future costs.
+_dynamically_, without locking in future costs.
 
 Today, TurtleKV offers excellent performance relative to other
 state-of-the-art key-value stores.  Because its tuning optimization
