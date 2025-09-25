@@ -58,7 +58,7 @@ class TurtleKvRecipe(ConanFile):
         self.requires("boost/1.88.0", **VISIBLE, **OVERRIDE)
         self.requires("glog/0.7.1", **VISIBLE)
         self.requires("gperftools/2.16", **VISIBLE)
-        self.requires("llfs/0.41.1-devel", **VISIBLE)
+        self.requires("llfs/0.42.0", **VISIBLE)
         self.requires("pcg-cpp/cci.20220409", **VISIBLE)
         self.requires("vqf/0.2.5", **VISIBLE)
         self.requires("zlib/1.3.1", **OVERRIDE)
