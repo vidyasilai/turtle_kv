@@ -2,6 +2,8 @@
 #
 set -Eeuo pipefail
 
+env
+
 SCRIPT_DIR=$(realpath $(dirname "$0"))
 PROJECT_DIR=$(realpath $(dirname "${SCRIPT_DIR}"))
 
