@@ -17,6 +17,7 @@ cor conan profile detect
 # Pull configs for this build.
 #
 cor conan config install --type git https://gitlab.com/batteriesincluded/conan-config/linux-gcc12-x86_64.git
+cor conan remote list
 
 # Build.
 #
