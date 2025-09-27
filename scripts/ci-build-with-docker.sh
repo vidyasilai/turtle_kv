@@ -13,8 +13,6 @@ ROOT_IMAGE=registry.gitlab.com/batteriesincluded/batt-docker/batteries-debian12-
 USER_IMAGE=$(cor docker user-image ${ROOT_IMAGE})
 
 docker run \
-       --interactive \
-       --tty \
        --ulimit memlock=-1:-1 \
        --cap-add SYS_ADMIN \
        --privileged \
