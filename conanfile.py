@@ -5,7 +5,7 @@ import os, sys, platform
 class TurtleKvRecipe(ConanFile):
     name = "turtle_kv"
 
-    python_requires = "cor_recipe_utils/0.16.0"
+    python_requires = "cor_recipe_utils/0.17.0"
     python_requires_extend = "cor_recipe_utils.ConanFileBase"
 
     settings = "os", "compiler", "build_type", "arch"
