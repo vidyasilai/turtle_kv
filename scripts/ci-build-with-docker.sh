@@ -10,7 +10,7 @@ PROJECT_DIR=$(realpath $(dirname "${SCRIPT_DIR}"))
 # Run the ci-build.sh script using docker.
 #
 ROOT_IMAGE=registry.gitlab.com/batteriesincluded/batt-docker/batteries-debian12-build-tools:0.5.0
-USER_IMAGE=$(cor docker user-image ${ROOT_IMAGE} --user-commands-file="${PROJECT_DIR}/ci-build-setup.dockerfile")
+USER_IMAGE=$(cor docker user-image ${ROOT_IMAGE} --user-commands-file="${SCRIPT_DIR}/ci-build-setup.dockerfile")
 
 docker run \
        --ulimit memlock=-1:-1 \
