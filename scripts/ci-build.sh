@@ -6,6 +6,12 @@ set -Eeuo pipefail
 #
 cor conan config install --type git https://gitlab.com/batteriesincluded/conan-config/linux-gcc12-x86_64.git
 
+# Enable the local cache server.
+#
+if [ "${CACHE_CONAN_REMOTE:-}" != "" ]; then
+    cor conan remote enable "${CACHE_CONAN_REMOTE}"
+fi
+
 # Select the build configuration.
 #
 cor select --clean --profile=linux-gcc12-x86_64 --build-type=Release
