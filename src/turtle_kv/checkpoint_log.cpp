@@ -55,13 +55,18 @@ Status create_checkpoint_log(llfs::StorageContext& storage_context,
   return OkStatus();
 }
 
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+// ==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+// TODO: Consider having this function return Volume and Checkpoints
 //
 StatusOr<std::unique_ptr<llfs::Volume>> open_checkpoint_log(
     llfs::StorageContext& storage_context,
     const std::filesystem::path& file_name) noexcept
 {
+  LOG(INFO) << "Entering open_checkpoint_log";
   BATT_REQUIRE_OK(storage_context.add_existing_named_file(file_name.string()));
+
+  LOG(INFO) << "open_checkpoint_log 1";
 
   Optional<batt::SharedPtr<llfs::StorageObjectInfo>> info =
       storage_context                                                                      //
@@ -72,24 +77,44 @@ StatusOr<std::unique_ptr<llfs::Volume>> open_checkpoint_log(
     return Status{batt::StatusCode::kNotFound};
   }
 
+  LOG(INFO) << "open_checkpoint_log 2";
+
   llfs::PackedUUID uuid = (**info).p_config_slot->uuid;
 
   auto root_log_options =                                   //
       llfs::LogDeviceRuntimeOptions::with_default_values()  //
           .set_name("checkpoint_log");
 
+  LOG(INFO) << "open_checkpoint_log 3";
+
   auto recycler_log_options =                               //
       llfs::LogDeviceRuntimeOptions::with_default_values()  //
           .set_name("checkpoint_recycler");
 
-  return storage_context.recover_object(batt::StaticType<llfs::PackedVolumeConfig>{},
-                                        uuid,
-                                        llfs::VolumeRuntimeOptions{
-                                            .slot_visitor_fn = llfs::VolumeReader::SlotVisitorFn{},
-                                            .root_log_options = root_log_options,
-                                            .recycler_log_options = recycler_log_options,
-                                            .trim_control = nullptr,
-                                        });
+  LOG(INFO) << "open_checkpoint_log 4";
+
+  return storage_context.recover_object(
+      batt::StaticType<llfs::PackedVolumeConfig>{},
+      uuid,
+      llfs::VolumeRuntimeOptions{
+          // TODO: [Gabe Bornstein 10/21/25] SlotVisitorFn needs to be defined to recover a specific
+          // PackedVariant type
+          // Look at slot_reader.hpp::make_slot_visitor (in template TypedSlotReader).
+          // This will adapt the pattern for visit_typed_next we use in recover_packed_checkpoints
+          // for the pattern here of SlotVisitorFn.
+          // Recovering PackedCheckpoints will be one of the final steps of recovering the volume.
+          //
+          // Could call this .slot_visitor_fn = [](auto&&...) { return OkStatus(); } if we want to
+          // grab all the user slots in the volume. Can sort them out later.
+          //
+          .slot_visitor_fn =
+              [](auto&&...) {
+                return OkStatus();
+              },
+          .root_log_options = root_log_options,
+          .recycler_log_options = recycler_log_options,
+          .trim_control = nullptr,
+      });
 }
 
 }  // namespace turtle_kv

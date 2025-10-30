@@ -12,6 +12,8 @@
 
 #include <turtle_kv/scan_metrics.hpp>
 
+#include <turtle_kv/checkpoint_log.hpp>
+
 #include <turtle_kv/core/table.hpp>
 
 namespace {
@@ -93,8 +95,7 @@ TEST(KVStoreTest, CreateAndOpen)
 
           {
             auto p_storage_context =
-                llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),
-                                                  //
+                llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
                                                   scoped_io_ring->get_io_ring());
 
             Status create_status = KVStore::create(*p_storage_context,  //
@@ -108,7 +109,6 @@ TEST(KVStoreTest, CreateAndOpen)
           auto p_storage_context =
               llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
                                                 scoped_io_ring->get_io_ring());
-
           BATT_CHECK_OK(KVStore::configure_storage_context(*p_storage_context,
                                                            tree_options,
                                                            runtime_options));
@@ -152,6 +152,40 @@ TEST(KVStoreTest, CreateAndOpen)
             LOG(INFO) << BATT_INSPECT(chi) << " | " << time_points[i].label << ": " << rate
                       << " ops/sec";
           }
+
+          // Test recovering checkpoints after stress test
+          //
+          kv_store.halt();
+          kv_store.join();
+          kv_store_opened->reset();
+
+          batt::StatusOr<std::unique_ptr<llfs::Volume>> checkpoint_log_volume =
+              turtle_kv::open_checkpoint_log(*p_storage_context,  //
+                                             test_kv_store_dir / "checkpoint_log.llfs");
+
+          batt::StatusOr<turtle_kv::Checkpoint> checkpoint =
+              KVStore::recover_latest_checkpoint(**checkpoint_log_volume, test_kv_store_dir);
+
+          LOG(INFO) << "checkpoint.tree_height()==" << checkpoint->tree_height()
+                    << "\ncheckpoint.batch_upper_bound()==" << checkpoint->batch_upper_bound()
+                    << "\ncheckpoint.root_id()==" << checkpoint->root_id();
+
+          // There is no checkpoint
+          //
+          if (checkpoint->batch_upper_bound() == turtle_kv::DeltaBatchId::from_u64(0)) {
+            continue;
+          }
+          turtle_kv::KeyView key_view = turtle_kv::KeyView{"user14778758751002598672"};
+
+          turtle_kv::PageSliceStorage slice_storage;
+
+          std::unique_ptr<llfs::PageCacheJob> page_loader = (*checkpoint_log_volume)->new_job();
+
+          turtle_kv::KeyQuery key_query{*page_loader, slice_storage, tree_options, key_view};
+
+          batt::StatusOr<turtle_kv::ValueView> value = checkpoint->find_key(key_query);
+          LOG(INFO) << "Result of find_key: " << *value;
+          break;
         }
       }
     }

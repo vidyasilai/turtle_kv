@@ -862,6 +862,89 @@ Status KVStore::update_checkpoint(const State* observed_state)
   return OkStatus();
 }
 
+using CheckpointSlotPairs = std::vector<std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint>>;
+using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+batt::StatusOr<CheckpointSlotPairs> recover_packed_checkpoints(llfs::Volume& volume)
+{
+  LOG(INFO) << "Entering recover_packed_checkpoints";
+
+  llfs::StatusOr<llfs::TypedVolumeReader<CheckpointEvent>> reader =
+      volume.typed_reader<CheckpointEvent>(
+          llfs::SlotRangeSpec{
+              .lower_bound = llfs::None,
+              .upper_bound = llfs::None,
+          },
+          llfs::LogReadMode::kDurable);
+
+  BATT_REQUIRE_OK(reader);
+
+  CheckpointSlotPairs checkpoints;
+
+  for (;;) {
+    llfs::StatusOr<usize> n_slots_visited = reader->visit_typed_next(
+        batt::WaitForResource::kFalse,
+        [&checkpoints](const llfs::SlotParse& slot,
+                       const turtle_kv::PackedCheckpoint& packed_checkpoint) {
+          std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> pair(slot, packed_checkpoint);
+          checkpoints.push_back(pair);
+          return llfs::OkStatus();
+        });
+
+    BATT_REQUIRE_OK(n_slots_visited);
+    LOG(INFO) << "Visited n_slots_visited= " << *n_slots_visited << " checkpoints";
+    if (*n_slots_visited == 0) {
+      break;
+    }
+  }
+
+  LOG(INFO) << "Exiting recover_packed_checkpoints";
+  return checkpoints;
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+/*static*/ batt::StatusOr<turtle_kv::Checkpoint> KVStore::recover_latest_checkpoint(
+    llfs::Volume& checkpoint_log_volume,
+    std::filesystem::path checkpoint_log_dir)
+{
+  // batt::StatusOr<std::unique_ptr<llfs::Volume>> checkpoint_log_volume =
+  //     turtle_kv::open_checkpoint_log(storage_context,  //
+  //                                    checkpoint_log_dir / checkpoint_log_file_name());
+
+  // BATT_REQUIRE_OK(checkpoint_log_volume);
+
+  batt::StatusOr<CheckpointSlotPairs> packed_checkpoints =
+      recover_packed_checkpoints(checkpoint_log_volume);
+
+  BATT_REQUIRE_OK(packed_checkpoints);
+
+  if (packed_checkpoints->size() == 0) {
+    // TODO: [Gabe Bornstein 10/28/25] Probably want to do something else here that denotes "no
+    // checkpoints"
+    //
+    return Checkpoint();
+  }
+
+  // Find the most recent checkpoint. Is it always just packed_checkpoints.back()?
+  //
+  std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> prev_checkpoint =
+      packed_checkpoints->front();
+
+  // Validate that the checkpoints are in ascending order based on batch_upper_bound
+  //
+  for (auto checkpoint : *packed_checkpoints) {
+    BATT_CHECK_GE(checkpoint.second.batch_upper_bound, prev_checkpoint.second.batch_upper_bound);
+    prev_checkpoint = checkpoint;
+  }
+
+  return turtle_kv::Checkpoint::recover(checkpoint_log_volume,
+                                        packed_checkpoints->back().first,
+                                        packed_checkpoints->back().second);
+}
+
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 void KVStore::info_task_main() noexcept

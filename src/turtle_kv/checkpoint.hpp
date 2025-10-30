@@ -2,6 +2,7 @@
 
 #include <turtle_kv/checkpoint_lock.hpp>
 #include <turtle_kv/delta_batch_id.hpp>
+#include <turtle_kv/packed_checkpoint.hpp>
 
 #include <turtle_kv/tree/subtree.hpp>
 
@@ -28,11 +29,9 @@ class Checkpoint
  public:
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-#if 0  // TODO [tastolfi 2025-03-27] re-enable
-  static StatusOr<Checkpoint> recover(
-      llfs::Volume& checkpoint_volume,
-      const llfs::SlotWithPayload<TabletCheckpoint>& checkpoint) noexcept;
-#endif
+  static StatusOr<Checkpoint> recover(llfs::Volume& checkpoint_volume,
+                                      llfs::SlotParse& slot,
+                                      const PackedCheckpoint& checkpoint) noexcept;
 
   static Checkpoint empty_at_batch(DeltaBatchId batch_id) noexcept;
 
