@@ -305,6 +305,18 @@ struct SegmentedLevelAlgorithms {
     return OkStatus();
   }
 
+  /** \brief Merges the two given pivots, effectively erasing `right_pivot`.
+   */
+  void merge_pivots(i32 left_pivot, i32 right_pivot)
+  {
+    const usize segment_count = this->level_.segment_count();
+
+    for (usize segment_i = 0; segment_i < segment_count; ++segment_i) {
+      SegmentT& segment = this->level_.get_segment(segment_i);
+      in_segment(segment).merge_pivots(left_pivot, right_pivot, this->level_);
+    }
+  }
+
   /** \brief Invokes `fn` for each SegmentT& selected by `pivot_selector`.
    *
    * `pivot_selector` can be:

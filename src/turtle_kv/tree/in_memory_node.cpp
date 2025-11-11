@@ -288,7 +288,7 @@ Status InMemoryNode::update_buffer_insert(BatchUpdate& update)
 
   BATT_ASSIGN_OK_RESULT(  //
       new_merged_level.result_set,
-      update.context.merge_compact_edits(  //
+      update.context.merge_compact_edits</*decay_to_items=*/false>(  //
           global_max_key(),
           [&](MergeCompactor& compactor) -> Status {
             compactor.push_level(update.result_set.live_edit_slices());
@@ -402,7 +402,7 @@ Status InMemoryNode::compact_update_buffer_levels(BatchUpdateContext& update_con
   Status segment_load_status;
 
   BATT_ASSIGN_OK_RESULT(new_merged_level.result_set,
-                        update_context.merge_compact_edits(
+                        update_context.merge_compact_edits</*decay_to_items=*/false>(
                             global_max_key(),
                             [&](MergeCompactor& compactor) -> Status {
                               this->push_levels_to_merge(compactor,
@@ -447,10 +447,10 @@ StatusOr<BatchUpdate> InMemoryNode::collect_pivot_batch(BatchUpdateContext& upda
 
   // Merge/compact all pending edits for the specified pivot.
   //
-  BATT_ASSIGN_OK_RESULT(                            //
-      pivot_batch.result_set,                       //
-      update_context.merge_compact_edits(           //
-          /*max_key=*/pivot_key_range.upper_bound,  //
+  BATT_ASSIGN_OK_RESULT(                                             //
+      pivot_batch.result_set,                                        //
+      update_context.merge_compact_edits</*decay_to_items=*/false>(  //
+          /*max_key=*/pivot_key_range.upper_bound,                   //
           [&](MergeCompactor& compactor) -> Status {
             this->push_levels_to_merge(compactor,
                                        update_context.page_loader,
@@ -589,8 +589,7 @@ Status InMemoryNode::make_child_viable(BatchUpdateContext& update_context, i32 p
 
       //----- --- -- -  -  -   -
       [&](const NeedsMerge&) -> Status {
-        BATT_PANIC() << "TODO [tastolfi 2025-03-16] implement me!";
-        return batt::StatusCode::kUnimplemented;
+        return this->merge_child(update_context, pivot_i);
       });
 
   return status;
@@ -689,6 +688,552 @@ Status InMemoryNode::split_child(BatchUpdateContext& update_context, i32 pivot_i
   }
 
   return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i)
+{
+  Subtree& child = this->children[pivot_i];
+
+  // Decide which sibling to merge with. Edge cases: child that needs merge is the leftmost or
+  // rightmost child in the node.
+  //
+  i32 sibling_i = pivot_i;
+  i32 right_sibling = pivot_i + 1;
+  i32 left_sibling = pivot_i - 1;
+
+  bool need_compaction = false;
+  u64 active_segmented_levels = this->update_buffer.compute_active_segmented_levels();
+  if (pivot_i == 0) {
+    sibling_i = right_sibling;
+    if (get_bit(active_segmented_levels, pivot_i)) {
+      need_compaction = true;
+    }
+  } else if ((usize)pivot_i == this->children.size() - 1) {
+    sibling_i = left_sibling;
+    if (get_bit(active_segmented_levels, left_sibling)) {
+      need_compaction = true;
+    }
+  } else {
+    if (!get_bit(active_segmented_levels, pivot_i)) {
+      sibling_i = right_sibling;
+    } else {
+      if (!get_bit(active_segmented_levels, left_sibling)) {
+        sibling_i = left_sibling;
+      } else {
+        sibling_i = right_sibling;
+        need_compaction = true;
+      }
+    }
+  }
+
+  BATT_CHECK_NE(pivot_i, sibling_i);
+  BATT_REQUIRE_OK(this->children[sibling_i].to_in_memory_subtree(update_context.page_loader,
+                                                                 this->tree_options,
+                                                                 this->height - 1));
+
+  // Call child.try_merge().
+  //
+  Subtree& sibling = this->children[sibling_i];
+  StatusOr<Optional<Subtree>> status_or_merged = child.try_merge(update_context, sibling);
+  if (!status_or_merged.ok()) {
+    LOG(ERROR) << BATT_INSPECT(child.get_viability());
+  }
+  BATT_REQUIRE_OK(status_or_merged);
+
+  if (!*status_or_merged) {
+    if (!batt::is_case<Viable>(child.get_viability())) {
+      BATT_ASSIGN_OK_RESULT(KeyView new_pivot_key, child.try_borrow(update_context, sibling));
+
+      this->pivot_keys_[std::max(pivot_i, sibling_i)] = new_pivot_key;
+
+      BATT_REQUIRE_OK(this->compact_update_buffer_levels(update_context));
+    }
+    BATT_CHECK(batt::is_case<Viable>(child.get_viability()));
+    return OkStatus();
+  }
+  Subtree& merged_subtree = **status_or_merged;
+
+  // Erase rightmost of {child subtree, sibling} in this->child_pages, overwrite leftmost
+  // with new PinnedPage{}.
+  //
+  i32 pivot_to_erase = std::max(pivot_i, sibling_i);
+  i32 pivot_to_overwrite = std::min(pivot_i, sibling_i);
+
+  this->child_pages[pivot_to_overwrite] = llfs::PinnedPage{};
+  this->child_pages.erase(this->child_pages.begin() + pivot_to_erase);
+
+  // Update the update_buffer levels.
+  //
+  if (need_compaction) {
+    BATT_REQUIRE_OK(this->compact_update_buffer_levels(update_context));
+  } else {
+    for (Level& level : this->update_buffer.levels) {
+      if (batt::is_case<SegmentedLevel>(level)) {
+        SegmentedLevel& segmented_level = std::get<SegmentedLevel>(level);
+        in_segmented_level(*this, segmented_level, update_context.page_loader)
+            .merge_pivots(pivot_to_overwrite, pivot_to_erase);
+      }
+    }
+  }
+
+  // Update this->children, following same update method as with this->child_pages.
+  //
+  this->children[pivot_to_overwrite] = std::move(merged_subtree);
+  this->children.erase(this->children.begin() + pivot_to_erase);
+
+  // Update pending_bytes. The leftmost of {subtree, sibling} should be incremented by the removed
+  // subtree's pending bytes values. Erase the pending bytes of the removed subtree.
+  //
+  this->pending_bytes[pivot_to_overwrite] += this->pending_bytes[pivot_to_erase];
+  this->pending_bytes.erase(this->pending_bytes.begin() + pivot_to_erase);
+
+  bool is_pending_bytes_exact = get_bit(this->pending_bytes_is_exact, pivot_to_overwrite) &
+                                get_bit(this->pending_bytes_is_exact, pivot_to_erase);
+  this->pending_bytes_is_exact =
+      set_bit(this->pending_bytes_is_exact, pivot_to_overwrite, is_pending_bytes_exact);
+  this->pending_bytes_is_exact = remove_bit(this->pending_bytes_is_exact, pivot_to_erase);
+
+  // Remove the pivot key of the removed child subtree from this->pivot_keys_.
+  //
+  this->pivot_keys_.erase(this->pivot_keys_.begin() + pivot_to_erase);
+
+  if ((usize)pivot_to_erase == this->children.size()) {
+    BATT_ASSIGN_OK_RESULT(
+        this->max_key_,
+        this->children.back().get_max_key(update_context.page_loader, this->child_pages.back()));
+  }
+
+  // Finally, split the newly merged child if needed.
+  //
+  SubtreeViability merged_viability = merged_subtree.get_viability();
+  if (batt::is_case<NeedsSplit>(merged_viability)) {
+    BATT_REQUIRE_OK(this->split_child(update_context, pivot_to_overwrite));
+  } else {
+    BATT_CHECK(batt::is_case<Viable>(merged_viability));
+  }
+
+  return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<Optional<Subtree>> InMemoryNode::flush_and_shrink(BatchUpdateContext& context)
+{
+  // If more than one pivot exists, nothings needs to be done.
+  //
+  usize pivot_count = this->pivot_count();
+  if (pivot_count > 1) {
+    return None;
+  }
+
+  i32 single_pivot_i = 0;
+  BATT_CHECK_EQ(this->pending_bytes.size(), 1);
+  usize pending_bytes_count = this->pending_bytes[single_pivot_i];
+
+  // Flush until we have nothing left in the update buffer or until we gain more pivots.
+  //
+  while (pivot_count == 1 && pending_bytes_count > 0) {
+    BATT_REQUIRE_OK(this->flush_to_pivot(context, single_pivot_i));
+    pivot_count = this->pivot_count();
+    pending_bytes_count = this->pending_bytes[single_pivot_i];
+  }
+
+  // If still only one pivot remains, return the child.
+  //
+  if (pivot_count == 1) {
+    return std::move(this->children[single_pivot_i]);
+  } else {
+    return None;
+  }
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateContext& context,
+                                                                InMemoryNode& sibling)
+{
+  // If merging both full nodes will cause the merged node's pivot count to exceed the max
+  // possible pivot count, return null so that we can try a borrow.
+  //
+  if (this->pivot_count() + sibling.pivot_count() > this->max_pivot_count()) {
+    return nullptr;
+  }
+
+  auto new_node = std::make_unique<InMemoryNode>(batt::make_copy(this->pinned_node_page_),
+                                                 this->tree_options,
+                                                 this->is_size_tiered());
+
+  const auto concat_metadata = [&](InMemoryNode& left, InMemoryNode& right) {
+    new_node->max_key_ = right.max_key_;
+
+    new_node->latest_flush_pivot_i_ = None;
+
+    new_node->pending_bytes.insert(new_node->pending_bytes.end(),
+                                   left.pending_bytes.begin(),
+                                   left.pending_bytes.end());
+    new_node->pending_bytes.insert(new_node->pending_bytes.end(),
+                                   right.pending_bytes.begin(),
+                                   right.pending_bytes.end());
+
+    new_node->pending_bytes_is_exact = left.pending_bytes_is_exact & right.pending_bytes_is_exact;
+
+    new_node->child_pages.insert(new_node->child_pages.end(),
+                                 std::make_move_iterator(left.child_pages.begin()),
+                                 std::make_move_iterator(left.child_pages.end()));
+    new_node->child_pages.insert(new_node->child_pages.end(),
+                                 std::make_move_iterator(right.child_pages.begin()),
+                                 std::make_move_iterator(right.child_pages.end()));
+
+    new_node->children.insert(new_node->children.end(),
+                              std::make_move_iterator(left.children.begin()),
+                              std::make_move_iterator(left.children.end()));
+    new_node->children.insert(new_node->children.end(),
+                              std::make_move_iterator(right.children.begin()),
+                              std::make_move_iterator(right.children.end()));
+
+    new_node->pivot_keys_.insert(new_node->pivot_keys_.end(),
+                                 left.pivot_keys_.begin(),
+                                 left.pivot_keys_.end() - 1);
+    new_node->pivot_keys_.insert(new_node->pivot_keys_.end(),
+                                 right.pivot_keys_.begin(),
+                                 right.pivot_keys_.end());
+  };
+
+  const auto merge_update_buffers = [&](InMemoryNode& left, InMemoryNode& right) -> Status {
+    usize i = 0;
+    for (; i < left.update_buffer.levels.size(); ++i) {
+      Level& left_level = left.update_buffer.levels[i];
+      BATT_REQUIRE_OK(batt::case_of(  //
+          left_level,                 //
+          [&](EmptyLevel&) -> Status {
+            if (i < right.update_buffer.levels.size()) {
+              Level& right_level = right.update_buffer.levels[i];
+              if (!batt::is_case<EmptyLevel>(right_level)) {
+                new_node->update_buffer.levels.emplace_back(std::move(right_level));
+              }
+            }
+
+            return OkStatus();
+          },
+          [&](MergedLevel& left_merged_level) -> Status {
+            if (i < right.update_buffer.levels.size()) {
+              BATT_REQUIRE_OK(batt::case_of(
+                  right.update_buffer.levels[i],
+                  [&](EmptyLevel&) -> Status {
+                    new_node->update_buffer.levels.emplace_back(std::move(left_merged_level));
+                    return OkStatus();
+                  },
+                  [&](MergedLevel& right_merged_level) -> Status {
+                    new_node->update_buffer.levels.emplace_back(
+                        left_merged_level.concat(right_merged_level));
+                    return OkStatus();
+                  },
+                  [&](SegmentedLevel& right_segmented_level) -> Status {
+                    // When merging a MergedLevel and a SegmentedLevel, create a new MergedLevel.
+                    //
+                    MergedLevel new_merged_level;
+                    HasPageRefs has_page_refs{false};
+                    Status segment_load_status;
+
+                    Slice<Level> levels_to_merge =
+                        as_slice(right.update_buffer.levels.data() + i, usize{1});
+
+                    BATT_ASSIGN_OK_RESULT(  //
+                        new_merged_level.result_set,
+                        context.merge_compact_edits</*decay_to_items=*/false>(  //
+                            global_max_key(),
+                            [&](MergeCompactor& compactor) -> Status {
+                              compactor.push_level(left_merged_level.result_set.live_edit_slices());
+                              right.push_levels_to_merge(compactor,
+                                                         context.page_loader,
+                                                         segment_load_status,
+                                                         has_page_refs,
+                                                         levels_to_merge,
+                                                         /*min_pivot_i=*/0,
+                                                         /*only_pivot=*/false);
+                              return OkStatus();
+                            }));
+
+                    BATT_REQUIRE_OK(segment_load_status);
+
+                    new_node->update_buffer.levels.emplace_back(std::move(new_merged_level));
+
+                    return OkStatus();
+                  }));
+            } else {
+              new_node->update_buffer.levels.emplace_back(std::move(left_merged_level));
+            }
+
+            return OkStatus();
+          },
+          [&](SegmentedLevel& left_segmented_level) -> Status {
+            if (i < right.update_buffer.levels.size()) {
+              BATT_REQUIRE_OK(batt::case_of(
+                  right.update_buffer.levels[i],
+                  [&](EmptyLevel&) -> Status {
+                    new_node->update_buffer.levels.emplace_back(std::move(left_segmented_level));
+                    return OkStatus();
+                  },
+                  [&](MergedLevel& right_merged_level) -> Status {
+                    MergedLevel new_merged_level;
+                    HasPageRefs has_page_refs{false};
+                    Status segment_load_status;
+
+                    Slice<Level> levels_to_merge =
+                        as_slice(left.update_buffer.levels.data() + i, usize{1});
+
+                    BATT_ASSIGN_OK_RESULT(  //
+                        new_merged_level.result_set,
+                        context.merge_compact_edits</*decay_to_items=*/false>(  //
+                            global_max_key(),
+                            [&](MergeCompactor& compactor) -> Status {
+                              left.push_levels_to_merge(compactor,
+                                                        context.page_loader,
+                                                        segment_load_status,
+                                                        has_page_refs,
+                                                        levels_to_merge,
+                                                        /*min_pivot_i=*/0,
+                                                        /*only_pivot=*/false);
+                              compactor.push_level(
+                                  right_merged_level.result_set.live_edit_slices());
+                              return OkStatus();
+                            }));
+
+                    BATT_REQUIRE_OK(segment_load_status);
+
+                    new_node->update_buffer.levels.emplace_back(std::move(new_merged_level));
+
+                    return OkStatus();
+                  },
+                  [&](SegmentedLevel& right_segmented_level) -> Status {
+                    // First shift the right level's bitsets to the left by the number of pivots
+                    // in the left node.
+                    //
+                    usize left_node_pivot_count = left.pivot_count();
+                    for (usize segment_i = 0; segment_i < right_segmented_level.segment_count();
+                         ++segment_i) {
+                      Segment& segment = right_segmented_level.get_segment(segment_i);
+                      segment.flushed_pivots <<= left_node_pivot_count;
+                      segment.active_pivots <<= left_node_pivot_count;
+                    }
+
+                    new_node->update_buffer.levels.emplace_back(std::move(left_segmented_level));
+                    SegmentedLevel& new_segmented_level =
+                        std::get<SegmentedLevel>(new_node->update_buffer.levels.back());
+                    new_segmented_level.segments.insert(
+                        new_segmented_level.segments.end(),
+                        std::make_move_iterator(right_segmented_level.segments.begin()),
+                        std::make_move_iterator(right_segmented_level.segments.end()));
+
+                    return OkStatus();
+                  }));
+            } else {
+              new_node->update_buffer.levels.emplace_back(std::move(left_segmented_level));
+            }
+
+            return OkStatus();
+          }));
+    }
+
+    // Carry over any remaining levels from the right node's update buffer.
+    //
+    for (; i < right.update_buffer.levels.size(); ++i) {
+      Level& right_level = right.update_buffer.levels[i];
+      if (!batt::is_case<EmptyLevel>(right_level)) {
+        new_node->update_buffer.levels.emplace_back(std::move(right_level));
+      }
+    }
+
+    return OkStatus();
+  };
+
+  if (this->get_max_key() < sibling.get_min_key()) {
+    concat_metadata(*this, sibling);
+    BATT_REQUIRE_OK(merge_update_buffers(*this, sibling));
+  } else {
+    concat_metadata(sibling, *this);
+    BATT_REQUIRE_OK(merge_update_buffers(sibling, *this));
+  }
+
+  return {std::move(new_node)};
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemoryNode& sibling)
+{
+  BATT_CHECK(batt::is_case<Viable>(sibling.get_viability()));
+
+  bool right_sibling = this->get_max_key() < sibling.get_min_key();
+
+  BATT_CHECK_LT(this->pivot_count(), 4);
+  u32 num_pivots_to_borrow = 4 - this->pivot_count();
+
+  i32 borrowed_min_pivot_i = -1;
+  KeyView borrowed_max_pivot_key;
+  if (right_sibling) {
+    borrowed_min_pivot_i = 0;
+    borrowed_max_pivot_key = sibling.get_pivot_key(num_pivots_to_borrow);
+  } else {
+    borrowed_min_pivot_i = sibling.pivot_count() - num_pivots_to_borrow;
+    borrowed_max_pivot_key = sibling.get_pivot_key(sibling.pivot_count());
+  }
+  Interval<KeyView> borrowed_pivot_range{sibling.get_pivot_key(borrowed_min_pivot_i),
+                                         borrowed_max_pivot_key};
+
+  BatchUpdate borrowed_pivot_batch{
+      .context = context,
+      .result_set = {},
+      .edit_size_totals = None,
+  };
+
+  Status segment_load_status;
+  HasPageRefs has_page_refs{false};
+
+  BATT_ASSIGN_OK_RESULT(                                      //
+      borrowed_pivot_batch.result_set,                        //
+      context.merge_compact_edits</*decay_to_items=*/false>(  //
+          /*max_key=*/borrowed_max_pivot_key,                 //
+          [&](MergeCompactor& compactor) -> Status {
+            sibling.push_levels_to_merge(compactor,
+                                         context.page_loader,
+                                         segment_load_status,
+                                         has_page_refs,
+                                         as_slice(sibling.update_buffer.levels),
+                                         /*min_pivot_i=*/borrowed_min_pivot_i,
+                                         /*only_pivot=*/false);
+            return OkStatus();
+          }));
+
+  BATT_REQUIRE_OK(segment_load_status);
+
+  borrowed_pivot_batch.result_set.drop_key_range_half_open(Interval<KeyView>{
+      borrowed_max_pivot_key,
+      sibling.key_upper_bound(),
+  });
+
+  borrowed_pivot_batch.edit_size_totals = None;
+
+  if (right_sibling) {
+    this->pending_bytes.insert(this->pending_bytes.end(),
+                               sibling.pending_bytes.begin(),
+                               sibling.pending_bytes.begin() + num_pivots_to_borrow);
+    sibling.pending_bytes.erase(sibling.pending_bytes.begin(),
+                                sibling.pending_bytes.begin() + num_pivots_to_borrow);
+
+    u64 borrowed_pending_bytes_exact =
+        sibling.pending_bytes_is_exact & ((u64{1} << num_pivots_to_borrow) - 1);
+    u64 mask = ((u64{1} << num_pivots_to_borrow) - 1) << (this->pivot_count() - 1);
+    this->pending_bytes_is_exact = (this->pending_bytes_is_exact & ~mask) |
+                                   (borrowed_pending_bytes_exact << (this->pivot_count() - 1));
+
+    this->pivot_keys_.pop_back();
+    this->pivot_keys_.insert(this->pivot_keys_.end(),
+                             sibling.pivot_keys_.begin(),
+                             sibling.pivot_keys_.begin() + num_pivots_to_borrow + 1);
+    sibling.pivot_keys_.erase(sibling.pivot_keys_.begin(),
+                              sibling.pivot_keys_.begin() + num_pivots_to_borrow);
+
+    this->child_pages.insert(
+        this->child_pages.end(),
+        std::make_move_iterator(sibling.child_pages.begin()),
+        std::make_move_iterator(sibling.child_pages.begin() + num_pivots_to_borrow));
+    sibling.child_pages.erase(sibling.child_pages.begin(),
+                              sibling.child_pages.begin() + num_pivots_to_borrow);
+
+    this->children.insert(this->children.end(),
+                          std::make_move_iterator(sibling.children.begin()),
+                          std::make_move_iterator(sibling.children.begin() + num_pivots_to_borrow));
+    sibling.children.erase(sibling.children.begin(),
+                           sibling.children.begin() + num_pivots_to_borrow);
+
+    BATT_ASSIGN_OK_RESULT(
+        this->max_key_,
+        this->children.back().get_max_key(context.page_loader, this->child_pages.back()));
+  } else {
+    this->pending_bytes.insert(this->pending_bytes.begin(),
+                               sibling.pending_bytes.end() - num_pivots_to_borrow,
+                               sibling.pending_bytes.end());
+    sibling.pending_bytes.erase(sibling.pending_bytes.end() - num_pivots_to_borrow,
+                                sibling.pending_bytes.end());
+
+    u64 borrowed_pending_bytes_exact =
+        sibling.pending_bytes_is_exact >> (64 - num_pivots_to_borrow);
+    this->pending_bytes_is_exact <<= num_pivots_to_borrow;
+    this->pending_bytes_is_exact |= borrowed_pending_bytes_exact;
+
+    sibling.pivot_keys_.pop_back();
+    this->pivot_keys_.insert(this->pivot_keys_.begin(),
+                             sibling.pivot_keys_.end() - num_pivots_to_borrow,
+                             sibling.pivot_keys_.end());
+    sibling.pivot_keys_.erase(sibling.pivot_keys_.end() - num_pivots_to_borrow + 1,
+                              sibling.pivot_keys_.end());
+
+    this->child_pages.insert(
+        this->child_pages.begin(),
+        std::make_move_iterator(sibling.child_pages.end() - num_pivots_to_borrow),
+        std::make_move_iterator(sibling.child_pages.end()));
+    sibling.child_pages.erase(sibling.child_pages.end() - num_pivots_to_borrow,
+                              sibling.child_pages.end());
+
+    this->children.insert(this->children.begin(),
+                          std::make_move_iterator(sibling.children.end() - num_pivots_to_borrow),
+                          std::make_move_iterator(sibling.children.end()));
+    sibling.children.erase(sibling.children.end() - num_pivots_to_borrow, sibling.children.end());
+
+    BATT_ASSIGN_OK_RESULT(
+        sibling.max_key_,
+        sibling.children.back().get_max_key(context.page_loader, sibling.child_pages.back()));
+  }
+
+  BATT_REQUIRE_OK(this->update_buffer_insert(borrowed_pivot_batch));
+
+  for (Level& level : sibling.update_buffer.levels) {
+    batt::case_of(  //
+        level,      //
+        [](EmptyLevel&) {
+          // nothing to do
+        },
+        [&](MergedLevel& merged_level) {
+          merged_level.result_set.drop_key_range_half_open(borrowed_pivot_range);
+        },
+        [&](SegmentedLevel& segmented_level) {
+          for (usize segment_i = 0; segment_i < segmented_level.segment_count(); ++segment_i) {
+            Segment& segment = segmented_level.get_segment(segment_i);
+            if (right_sibling) {
+              segment.flushed_pivots >>= num_pivots_to_borrow;
+              segment.active_pivots >>= num_pivots_to_borrow;
+              segment.flushed_item_upper_bound_.erase(
+                  segment.flushed_item_upper_bound_.begin(),
+                  segment.flushed_item_upper_bound_.begin() + num_pivots_to_borrow);
+            } else {
+              u64 mask = (u64{1} << (64 - num_pivots_to_borrow)) - 1;
+              segment.flushed_pivots &= mask;
+              segment.active_pivots &= mask;
+              segment.flushed_item_upper_bound_.erase(
+                  segment.flushed_item_upper_bound_.end() - num_pivots_to_borrow,
+                  segment.flushed_item_upper_bound_.end());
+            }
+          }
+        });
+  }
+
+  KeyView left_child_max;
+  KeyView right_child_min;
+  if (right_sibling) {
+    left_child_max = this->get_max_key();
+    right_child_min = sibling.get_min_key();
+  } else {
+    left_child_max = sibling.get_max_key();
+    right_child_min = this->get_min_key();
+  }
+
+  const KeyView prefix = llfs::find_common_prefix(0, left_child_max, right_child_min);
+  const KeyView new_sibling_pivot_key = right_child_min.substr(0, prefix.size() + 1);
+
+  return new_sibling_pivot_key;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -1674,6 +2219,27 @@ void InMemoryNode::UpdateBuffer::Segment::insert_pivot(i32 pivot_i, bool is_acti
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+void InMemoryNode::UpdateBuffer::Segment::remove_pivot(i32 pivot_i)
+{
+  this->check_invariants(__FILE__, __LINE__);
+  auto on_scope_exit = batt::finally([&] {
+    this->check_invariants(__FILE__, __LINE__);
+  });
+
+  if (get_bit(this->flushed_pivots, pivot_i)) {
+    const i32 index = bit_rank(this->flushed_pivots, pivot_i);
+    BATT_ASSERT_GE(index, 0);
+    BATT_ASSERT_LT(index, this->flushed_item_upper_bound_.size());
+
+    this->flushed_item_upper_bound_.erase(this->flushed_item_upper_bound_.begin() + index);
+  }
+
+  this->active_pivots = remove_bit(this->active_pivots, pivot_i);
+  this->flushed_pivots = remove_bit(this->flushed_pivots, pivot_i);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 void InMemoryNode::UpdateBuffer::Segment::pop_front_pivots(i32 count)
 {
   if (count < 1) {
@@ -1723,6 +2289,24 @@ SmallFn<void(std::ostream&)> InMemoryNode::UpdateBuffer::dump() const
     }
     out << "},}";
   };
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+u64 InMemoryNode::UpdateBuffer::compute_active_segmented_levels() const
+{
+  u64 active_pivots = 0;
+  for (const Level& level : this->levels) {
+    if (batt::is_case<SegmentedLevel>(level)) {
+      const SegmentedLevel& segmented_level = std::get<SegmentedLevel>(level);
+      for (usize segment_i = 0; segment_i < segmented_level.segment_count(); ++segment_i) {
+        const Segment& segment = segmented_level.get_segment(segment_i);
+        active_pivots |= segment.get_active_pivots();
+      }
+    }
+  }
+
+  return active_pivots;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

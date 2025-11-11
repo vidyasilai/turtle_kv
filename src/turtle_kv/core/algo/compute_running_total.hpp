@@ -14,10 +14,10 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <bool kDecayValue = false>
+template <bool kDecayValue>
 inline batt::RunningTotal compute_running_total(
     batt::WorkerPool& worker_pool,
-    const MergeCompactor::ResultSet</*decay_to_items=*/false>& result_set,
+    const MergeCompactor::ResultSet<kDecayValue>& result_set,
     DecayToItem<kDecayValue> decay_to_item [[maybe_unused]] = {})
 {
   auto merged_edits = result_set.get();

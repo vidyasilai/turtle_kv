@@ -513,23 +513,22 @@ struct LeafItemsSummary {
 struct AddLeafItemsSummary {
   LeafItemsSummary operator()(const LeafItemsSummary& prior, const EditView& edit) const noexcept
   {
-    if (!decays_to_item(edit.value)) {
-      LOG(ERROR) << "TODO [tastolfi 2025-05-27] support deletes:" << BATT_INSPECT(edit);
-
-      return LeafItemsSummary{
-          .drop_count = prior.drop_count + 1,
-          .key_count = prior.key_count,
-          .key_data_size = prior.key_data_size,
-          .value_data_size = prior.value_data_size,
-      };
-    } else {
-      return LeafItemsSummary{
-          .drop_count = prior.drop_count,
-          .key_count = prior.key_count + 1,
-          .key_data_size = prior.key_data_size + (edit.key.size() + 4),
-          .value_data_size = prior.value_data_size + (1 + edit.value.size()),
-      };
+    usize drop_count = prior.drop_count;
+    if (decays_to_item(edit)) {
+      drop_count++;
     }
+    return LeafItemsSummary{
+      .drop_count = drop_count,
+      .key_count = prior.key_count + 1,
+      .key_data_size = prior.key_data_size + (edit.key.size() + 4),
+      .value_data_size = prior.value_data_size + (1 + edit.value.size()),
+    };
+  }
+
+  LeafItemsSummary operator()(const LeafItemsSummary& prior,
+                              const ItemView& edit) const noexcept
+  {
+    return AddLeafItemsSummary{}(BATT_FORWARD(prior), EditView::from_item_view(edit));
   }
 
   LeafItemsSummary operator()(const LeafItemsSummary& left,
@@ -555,8 +554,6 @@ template <typename ItemsRangeT>
                                              std::end(items),
                                              LeafItemsSummary{},
                                              AddLeafItemsSummary{});
-
-  BATT_CHECK_EQ(summary.drop_count, 0);
 
   PackedLeafLayoutPlanBuilder plan_builder;
 

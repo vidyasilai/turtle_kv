@@ -1,5 +1,6 @@
 #pragma once
 
+#include <turtle_kv/tree/batch_update.hpp>
 #include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/subtree_viability.hpp>
 #include <turtle_kv/tree/tree_options.hpp>
@@ -32,7 +33,7 @@ struct InMemoryLeaf {
 
   llfs::PinnedPage pinned_leaf_page_;
   TreeOptions tree_options;
-  MergeCompactor::ResultSet</*decay_to_items=*/false> result_set;
+  MergeCompactor::ResultSet</*decay_to_items=*/true> result_set;
   std::shared_ptr<const batt::RunningTotal> shared_edit_size_totals_;
   Optional<batt::RunningTotal::slice_type> edit_size_totals;
   mutable std::atomic<u64> future_id_{~u64{0}};
@@ -90,6 +91,9 @@ struct InMemoryLeaf {
   StatusOr<std::unique_ptr<InMemoryLeaf>> try_split();
 
   StatusOr<SplitPlan> make_split_plan() const;
+
+  StatusOr<std::unique_ptr<InMemoryLeaf>> try_merge(BatchUpdateContext& context,
+                                                    InMemoryLeaf& sibling);
 
   Status start_serialize(TreeSerializeContext& context);
 

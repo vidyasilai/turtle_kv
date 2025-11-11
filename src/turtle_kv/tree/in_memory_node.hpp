@@ -144,6 +144,11 @@ struct InMemoryNode {
        */
       void insert_pivot(i32 pivot_i, bool is_active);
 
+      /** \brief Removes a pivot bit in this->active_pivots and this->flushed_pivots at position
+       * `pivot_i`.
+       */
+      void remove_pivot(i32 pivot_i);
+
       /** \brief Removes the specified number (`count`) pivots from the front of this segment.  This
        * is used while splitting a node's update buffer.
        */
@@ -318,6 +323,14 @@ struct InMemoryNode {
         return estimated;
       }
 
+      MergedLevel concat(MergedLevel& that)
+      {
+        return MergedLevel{
+            .result_set = MergeCompactor::ResultSet<false>::concat(std::move(this->result_set),
+                                                                   std::move(that.result_set)),
+            .segment_future_ids_ = {}};
+      }
+
       /** \brief Returns the number of segment leaf page build jobs added to the context.
        */
       StatusOr<usize> start_serialize(const InMemoryNode& node, TreeSerializeContext& context);
@@ -337,6 +350,8 @@ struct InMemoryNode {
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
     SmallFn<void(std::ostream&)> dump() const;
+
+    u64 compute_active_segmented_levels() const;
 
     usize count_non_empty_levels() const
     {
@@ -525,9 +540,30 @@ struct InMemoryNode {
    */
   Status try_flush(BatchUpdateContext& context);
 
+  /** \brief Merge the node with one of its siblings and return the newly merged node.
+   */
+  StatusOr<std::unique_ptr<InMemoryNode>> try_merge(BatchUpdateContext& context,
+                                                    InMemoryNode& sibling);
+
+  /** \brief Attempts to make the node (that needs a merge) viable by borrowing data
+   * from one of its siblings. If successful, returns the new pivot key to be set in the parent
+   * of these two nodes to separate them.
+   */
+  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, InMemoryNode& sibling);
+
   /** \brief Splits the specified child, inserting a new pivot immediately after `pivot_i`.
    */
   Status split_child(BatchUpdateContext& update_context, i32 pivot_i);
+
+  /** \brief Merges the specified child with a sibling.
+   */
+  Status merge_child(BatchUpdateContext& update_context, i32 pivot_i);
+
+  /** \brief If the node has a single pivot, attempts to flush updates out of the update buffer
+   * to grow the number of pivots. If all the updates are flushed and still only a single pivot
+   * remains, the single pivot (child) is returned.
+   */
+  StatusOr<Optional<Subtree>> flush_and_shrink(BatchUpdateContext& context);
 
   /** \brief Returns true iff there are no MergedLevels or unserialized Subtree children in this
    * node.

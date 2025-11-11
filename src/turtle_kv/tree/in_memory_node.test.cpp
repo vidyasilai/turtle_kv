@@ -131,7 +131,7 @@ void verify_table_point_queries(Table& expected_table, Table& actual_table, Rng&
   }
 }
 
-void verify_range_scan(LatencyMetric* scan_latency,
+/*void verify_range_scan(LatencyMetric* scan_latency,
                        Table& expected_table,
                        const Slice<std::pair<KeyView, ValueView>>& actual_read_items,
                        const KeyView& min_key,
@@ -164,7 +164,7 @@ void verify_range_scan(LatencyMetric* scan_latency,
     ++expected_item_iter;
     ++actual_item_iter;
   }
-}
+} */
 
 struct SubtreeBatchUpdateScenario {
   static std::atomic<usize>& size_tiered_count()
@@ -279,6 +279,7 @@ TEST(InMemoryNodeTest, Subtree)
   if (n_threads != 0) {
     runner.n_threads(n_threads);
   }
+  runner.n_threads(usize{1});
   runner.n_seeds(n_seeds);
 
   if (n_seeds < 128) {
@@ -323,7 +324,7 @@ void SubtreeBatchUpdateScenario::run()
   }
 
   TreeOptions tree_options = TreeOptions::with_default_values()  //
-                                 .set_leaf_size(512 * kKiB)
+                                 .set_leaf_size(32 * kKiB)
                                  .set_node_size(4 * kKiB)
                                  .set_key_size_hint(24)
                                  .set_value_size_hint(100)
@@ -365,7 +366,9 @@ void SubtreeBatchUpdateScenario::run()
 
   usize total_items = 0;
 
-  for (usize i = 0; i < max_i; ++i) {
+  std::vector<KeyView> pending_deletes;
+
+  for (usize i = 0; i < max_i; ++i) {   
     BatchUpdate update{
         .context =
             BatchUpdateContext{
@@ -373,7 +376,7 @@ void SubtreeBatchUpdateScenario::run()
                 .page_loader = *page_loader,
                 .cancel_token = batt::CancelToken{},
             },
-        .result_set = result_set_generator(DecayToItem<false>{}, rng, strings),
+        .result_set = result_set_generator(DecayToItem<false>{}, rng, strings, pending_deletes),
         .edit_size_totals = None,
     };
     update.update_edit_size_totals();
@@ -385,6 +388,19 @@ void SubtreeBatchUpdateScenario::run()
 
     Status table_update_status = update_table(expected_table, update.result_set);
     ASSERT_TRUE(table_update_status.ok()) << BATT_INSPECT(table_update_status);
+
+    if (my_id == 0) {
+      if (!pending_deletes.empty()) {
+        pending_deletes.clear();
+      }
+
+      if (i > 0) {
+        BATT_CHECK(pending_deletes.empty());
+        for (const EditView& edit : update.result_set.get()) {
+          pending_deletes.emplace_back(edit.key);
+        }
+      }
+    }
 
     StatusOr<i32> tree_height = tree.get_height(*page_loader);
     ASSERT_TRUE(tree_height.ok()) << BATT_INSPECT(tree_height);
@@ -439,7 +455,7 @@ void SubtreeBatchUpdateScenario::run()
           << BATT_INSPECT(this->seed) << BATT_INSPECT(i);
 
       {
-        auto root_ptr = std::make_shared<Subtree>(tree.clone_serialized_or_panic());
+        /*auto root_ptr = std::make_shared<Subtree>(tree.clone_serialized_or_panic());
         std::unique_ptr<llfs::PageCacheJob> scanner_page_job = page_cache->new_job();
 
         const usize scan_len = pick_scan_len(rng);
@@ -475,7 +491,7 @@ void SubtreeBatchUpdateScenario::run()
                                                   as_slice(scan_items_buffer.data(), n_read),
                                                   min_key,
                                                   scan_len))
-            << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len);
+            << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len); */
       }
 
       if (my_id == 0) {

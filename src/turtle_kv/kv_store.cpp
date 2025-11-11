@@ -766,9 +766,7 @@ StatusOr<usize> KVStore::scan_keys(const KeyView& min_key,
 //
 Status KVStore::remove(const KeyView& key) noexcept /*override*/
 {
-  (void)key;
-
-  return batt::StatusCode::kUnimplemented;
+  return this->put(key, ValueView::deleted());
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

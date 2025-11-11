@@ -184,8 +184,11 @@ class RandomResultSetGenerator : public MinMaxSize<usize{1} << 24>
   }
 
   template <bool kDecayToItems, typename Rng>
-  MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems>
-  operator()(DecayToItem<kDecayToItems>, Rng& rng, llfs::StableStringStore& store)
+  MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems> operator()(
+      DecayToItem<kDecayToItems>,
+      Rng& rng,
+      llfs::StableStringStore& store,
+      Optional<std::vector<KeyView>> to_delete = None)
   {
     using ResultSet = MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems>;
     using Item = typename ResultSet::value_type;
@@ -199,6 +202,13 @@ class RandomResultSetGenerator : public MinMaxSize<usize{1} << 24>
         items.emplace_back(this->key_generator_(rng, store),
                            ValueView::from_str(store.store(std::string(this->value_size_, ch))));
       }
+
+      if (to_delete) {
+        for (const KeyView& delete_key : *to_delete) {
+          items.emplace_back(delete_key, ValueView::deleted());
+        }
+      }
+
       std::sort(items.begin(), items.end(), KeyOrder{});
       items.erase(std::unique(items.begin(),
                               items.end(),

@@ -139,10 +139,10 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
           auto new_leaf = std::make_unique<InMemoryLeaf>(llfs::PinnedPage{}, tree_options);
 
-          new_leaf->result_set = update.result_set;
+          update.decay_batch_to_items(new_leaf->result_set);
 
           if (!update.edit_size_totals) {
-            update.update_edit_size_totals();
+            update.update_edit_size_totals_decayed(new_leaf->result_set);
           }
 
           new_leaf->set_edit_size_totals(std::move(*update.edit_size_totals));
@@ -177,7 +177,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
           BATT_ASSIGN_OK_RESULT(  //
               new_leaf->result_set,
-              update.context.merge_compact_edits(  //
+              update.context.merge_compact_edits</*decay_to_items=*/true>(  //
                   global_max_key(),
                   [&](MergeCompactor& compactor) -> Status {
                     compactor.push_level(update.result_set.live_edit_slices());
@@ -216,7 +216,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
         BATT_ASSIGN_OK_RESULT(
             in_memory_leaf->result_set,
-            update.context.merge_compact_edits(
+            update.context.merge_compact_edits</*decay_to_items=*/true>(
                 global_max_key(),
                 [&](MergeCompactor& compactor) -> Status {
                   compactor.push_level(update.result_set.live_edit_slices());
@@ -265,9 +265,14 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           return status;
         },
         [&](const NeedsMerge& needs_merge) {
-          BATT_CHECK(!needs_merge.single_pivot)
-              << "TODO [tastolfi 2025-03-26] implement flush and shrink";
-          return OkStatus();
+          // Only perform a shrink if the root has a single pivot.
+          //
+          Status status = new_subtree->flush_and_shrink(update.context);
+
+          if (!status.ok()) {
+            LOG(INFO) << "flush_and_shrink failed;" << BATT_INSPECT(needs_merge);
+          }
+          return status;
         }));
   }
 
@@ -304,6 +309,38 @@ Status Subtree::split_and_grow(BatchUpdateContext& context,
   this->impl_ = std::move(new_root);
 
   return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status Subtree::flush_and_shrink(BatchUpdateContext& context)
+{
+  BATT_CHECK(!this->locked_.load());
+
+  return batt::case_of(
+      this->impl_,
+
+      [&](const llfs::PageIdSlot& page_id_slot [[maybe_unused]]) -> Status {
+        return {batt::StatusCode::kUnimplemented};
+      },
+
+      [&](const std::unique_ptr<InMemoryLeaf>& leaf [[maybe_unused]]) -> Status {
+        return OkStatus();
+      },
+
+      [&](std::unique_ptr<InMemoryNode>& node) -> Status {
+        StatusOr<Optional<Subtree>> status_or_new_root = node->flush_and_shrink(context);
+
+        BATT_REQUIRE_OK(status_or_new_root);
+
+        if (!*status_or_new_root) {
+          return OkStatus();
+        }
+
+        this->impl_ = std::move((*status_or_new_root)->impl_);
+
+        return OkStatus();
+      });
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -528,6 +565,74 @@ StatusOr<Optional<Subtree>> Subtree::try_split(BatchUpdateContext& context)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context, Subtree& sibling)
+{
+  BATT_CHECK(!this->locked_.load());
+
+  return batt::case_of(
+      this->impl_,
+
+      [&](const llfs::PageIdSlot& page_id_slot) -> StatusOr<Optional<Subtree>> {
+        BATT_PANIC() << "Cannot try merging a serialized subtree!";
+
+        return {batt::StatusCode::kUnimplemented};
+      },
+
+      [&](const std::unique_ptr<InMemoryLeaf>& leaf) -> StatusOr<Optional<Subtree>> {
+        BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryLeaf>>(sibling.impl_));
+        auto& sibling_leaf_ptr = std::get<std::unique_ptr<InMemoryLeaf>>(sibling.impl_);
+        BATT_CHECK(sibling_leaf_ptr);
+
+        BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryLeaf> merged_leaf,  //
+                              leaf->try_merge(context, *sibling_leaf_ptr));
+
+        return {Subtree{std::move(merged_leaf)}};
+      },
+
+      [&](const std::unique_ptr<InMemoryNode>& node) -> StatusOr<Optional<Subtree>> {
+        BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryNode>>(sibling.impl_));
+        auto& sibling_node_ptr = std::get<std::unique_ptr<InMemoryNode>>(sibling.impl_);
+        BATT_CHECK(sibling_node_ptr);
+
+        BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryNode> merged_node,  //
+                              node->try_merge(context, *sibling_node_ptr));
+
+        if (merged_node == nullptr) {
+          return Optional<Subtree>{None};
+        }
+
+        return {Subtree{std::move(merged_node)}};
+      });
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<KeyView> Subtree::try_borrow(BatchUpdateContext& context, Subtree& sibling)
+{
+  BATT_CHECK(!this->locked_.load());
+
+  return batt::case_of(
+      this->impl_,
+
+      [&](const llfs::PageIdSlot& page_id_slot [[maybe_unused]]) -> StatusOr<KeyView> {
+        return {batt::StatusCode::kUnimplemented};
+      },
+
+      [&](const std::unique_ptr<InMemoryLeaf>& leaf [[maybe_unused]]) -> StatusOr<KeyView> {
+        return {batt::StatusCode::kUnimplemented};
+      },
+
+      [&](const std::unique_ptr<InMemoryNode>& node) -> StatusOr<KeyView> {
+        BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryNode>>(sibling.impl_));
+        auto& sibling_node_ptr = std::get<std::unique_ptr<InMemoryNode>>(sibling.impl_);
+        BATT_CHECK(sibling_node_ptr);
+    
+        return node->try_borrow(context, *sibling_node_ptr);
+      });
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 Status Subtree::try_flush(BatchUpdateContext& context)
 {
   BATT_CHECK(!this->locked_.load());
@@ -645,4 +750,48 @@ void Subtree::lock()
   this->locked_.store(true);
 }
 
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status Subtree::to_in_memory_subtree(llfs::PageLoader& page_loader,
+                                     const TreeOptions& tree_options,
+                                     i32 height)
+{
+  BATT_CHECK_GT(height, 0);
+
+  if (this->is_serialized()) {
+    llfs::PageIdSlot& page_id_slot = std::get<llfs::PageIdSlot>(this->impl_);
+
+    BATT_CHECK(page_id_slot.is_valid());
+
+    llfs::PageLayoutId expected_layout = Subtree::expected_layout_for_height(height);
+
+    StatusOr<llfs::PinnedPage> status_or_pinned_page = page_id_slot.load_through(
+        page_loader,
+        llfs::PageLoadOptions{
+            expected_layout,
+            llfs::PinPageToJob::kDefault,
+            llfs::OkIfNotFound{false},
+            llfs::LruPriority{(height > 2) ? kNodeLruPriority : kLeafLruPriority},
+        });
+
+    BATT_REQUIRE_OK(status_or_pinned_page) << BATT_INSPECT(height);
+
+    llfs::PinnedPage& pinned_page = *status_or_pinned_page;
+
+    if (height == 1) {
+      auto new_leaf = std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
+      this->impl_ = std::move(new_leaf);
+    } else {
+      const PackedNodePage& packed_node = PackedNodePage::view_of(pinned_page);
+
+      BATT_ASSIGN_OK_RESULT(
+          std::unique_ptr<InMemoryNode> node,
+          InMemoryNode::unpack(batt::make_copy(pinned_page), tree_options, packed_node));
+
+      this->impl_ = std::move(node);
+    }
+  }
+
+  return OkStatus();
+}
 }  // namespace turtle_kv

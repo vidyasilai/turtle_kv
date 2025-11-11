@@ -138,6 +138,19 @@ class Subtree
    */
   StatusOr<Optional<Subtree>> try_split(BatchUpdateContext& context);
 
+  /** \brief Attempts to merge the given Subtree with one of its siblings. If successful, the
+   * newly merged Subtree is returned.
+   * 
+   * If no merge, returns None.
+   */
+  StatusOr<Optional<Subtree>> try_merge(BatchUpdateContext& context, Subtree& sibling);
+
+  /** \brief Attempts to make the Subtree viable by borrowing data from one of its siblings.
+   * Called when the Subtree needs a merge, but borrowing is the only option to make the tree
+   * viable.
+   */
+  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, Subtree& sibling);
+
   /** \brief Attempt to make the root viable by flushing a batch.
    */
   Status try_flush(BatchUpdateContext& context);
@@ -172,11 +185,23 @@ class Subtree
    */
   bool is_locked() const;
 
+  /** \brief Converts a serialized Subtree to its in-memory equivalent.
+   */
+  Status to_in_memory_subtree(llfs::PageLoader& page_loader,
+                              const TreeOptions& tree_options,
+                              i32 height);
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   Status split_and_grow(BatchUpdateContext& context,
                         const TreeOptions& tree_options,
                         const KeyView& key_upper_bound);
+
+  /** \brief Called when the root of the tree is a node with a single pivot. This function
+   * flushes the root's update buffer until its is either empty
+   * (causing the tree to shrink in height) or until it gains more pivots.
+   */
+  Status flush_and_shrink(BatchUpdateContext& context);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

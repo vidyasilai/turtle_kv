@@ -443,7 +443,14 @@ Status KVStoreScanner::set_next_item()
       }
 
     } else {
-      break;
+      // TODO [vsilai 11-10-2025]: need to fix key only scans to look at values.
+      //
+      if (!this->keys_only_ && this->next_item_->value == ValueView::deleted()) {
+        this->next_item_ = None;
+        continue;
+      } else {
+        break;
+      }
     }
 
     if (scan_level->advance()) {
