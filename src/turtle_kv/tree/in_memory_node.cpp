@@ -703,19 +703,18 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
   i32 right_sibling = pivot_i + 1;
   i32 left_sibling = pivot_i - 1;
 
-  bool need_compaction = false;
+  bool need_update_buffer_compaction = false;
   u64 active_segmented_levels = this->update_buffer.compute_active_segmented_levels();
   if (pivot_i == 0) {
     sibling_i = right_sibling;
-    if (get_bit(active_segmented_levels, pivot_i)) {
-      need_compaction = true;
-    }
-  } else if ((usize)pivot_i == this->children.size() - 1) {
+  } else if ((usize)pivot_i == this->pivot_count() - 1) {
     sibling_i = left_sibling;
-    if (get_bit(active_segmented_levels, left_sibling)) {
-      need_compaction = true;
-    }
   } else {
+    // If we don't have one of the edge cases, try and pick the sibling where the leftmost of
+    // {child, sibling} is inactive in all segmented levels. This way, the final merged pivot
+    // won't have on/off flushed ranges in segments. If this is not possible, pick the right
+    // sibling.
+    //
     if (!get_bit(active_segmented_levels, pivot_i)) {
       sibling_i = right_sibling;
     } else {
@@ -723,12 +722,15 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
         sibling_i = left_sibling;
       } else {
         sibling_i = right_sibling;
-        need_compaction = true;
       }
     }
   }
 
   BATT_CHECK_NE(pivot_i, sibling_i);
+  if (get_bit(active_segmented_levels, std::min(pivot_i, sibling_i))) {
+    need_update_buffer_compaction = true;
+  }
+
   BATT_REQUIRE_OK(this->children[sibling_i].to_in_memory_subtree(update_context.page_loader,
                                                                  this->tree_options,
                                                                  this->height - 1));
@@ -744,6 +746,8 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
 
   if (!*status_or_merged) {
     if (!batt::is_case<Viable>(child.get_viability())) {
+      // If the full merge wasn't possible, try borrowing from the sibling.
+      //
       BATT_ASSIGN_OK_RESULT(KeyView new_pivot_key, child.try_borrow(update_context, sibling));
 
       this->pivot_keys_[std::max(pivot_i, sibling_i)] = new_pivot_key;
@@ -766,7 +770,7 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
 
   // Update the update_buffer levels.
   //
-  if (need_compaction) {
+  if (need_update_buffer_compaction) {
     BATT_REQUIRE_OK(this->compact_update_buffer_levels(update_context));
   } else {
     for (Level& level : this->update_buffer.levels) {
@@ -1071,6 +1075,9 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
   BATT_CHECK_LT(this->pivot_count(), 4);
   u32 num_pivots_to_borrow = 4 - this->pivot_count();
 
+  // Calculate the pivot range to borrow from the sibling, and then extract updates from the
+  // sibling's update buffer that contain this range.
+  //
   i32 borrowed_min_pivot_i = -1;
   KeyView borrowed_max_pivot_key;
   if (right_sibling) {
@@ -1116,6 +1123,8 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
 
   borrowed_pivot_batch.edit_size_totals = None;
 
+  // Borrow node metadata from the sibling.
+  //
   if (right_sibling) {
     this->pending_bytes.insert(this->pending_bytes.end(),
                                sibling.pending_bytes.begin(),
@@ -1123,12 +1132,18 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
     sibling.pending_bytes.erase(sibling.pending_bytes.begin(),
                                 sibling.pending_bytes.begin() + num_pivots_to_borrow);
 
+    // Update this->pending_bytes_is_exact by placing the borrowing pending bytes bits from the
+    // right sibling right after the pending bytes bits for this node.
+    //
     u64 borrowed_pending_bytes_exact =
         sibling.pending_bytes_is_exact & ((u64{1} << num_pivots_to_borrow) - 1);
     u64 mask = ((u64{1} << num_pivots_to_borrow) - 1) << (this->pivot_count() - 1);
     this->pending_bytes_is_exact = (this->pending_bytes_is_exact & ~mask) |
                                    (borrowed_pending_bytes_exact << (this->pivot_count() - 1));
 
+    // Get rid of the key upper bound in this node and insert the borrowed pivot keys, including
+    // one past num_pivots_to_borrow, to set the new key upper bound.
+    //
     this->pivot_keys_.pop_back();
     this->pivot_keys_.insert(this->pivot_keys_.end(),
                              sibling.pivot_keys_.begin(),
@@ -1159,6 +1174,9 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
     sibling.pending_bytes.erase(sibling.pending_bytes.end() - num_pivots_to_borrow,
                                 sibling.pending_bytes.end());
 
+    // Shift this->pending_bytes_is_exact up by num_pivots_to_borrow, and place the borrowed
+    // pending bytes bits at the lowest order bits.
+    //
     u64 borrowed_pending_bytes_exact =
         sibling.pending_bytes_is_exact >> (64 - num_pivots_to_borrow);
     this->pending_bytes_is_exact <<= num_pivots_to_borrow;
@@ -1188,8 +1206,13 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
         sibling.children.back().get_max_key(context.page_loader, sibling.child_pages.back()));
   }
 
+  // Now that metadata has been borrowed, inserted the borrowed updates into the update buffer.
+  //
   BATT_REQUIRE_OK(this->update_buffer_insert(borrowed_pivot_batch));
 
+  // Adjust the update buffer levels metadata in the sibling now that the borrowed updates have
+  // been extracted. 
+  //
   for (Level& level : sibling.update_buffer.levels) {
     batt::case_of(  //
         level,      //
@@ -1220,6 +1243,8 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
         });
   }
 
+  // Calculate and return the new pivot key for the parent.
+  //
   KeyView left_child_max;
   KeyView right_child_min;
   if (right_sibling) {
