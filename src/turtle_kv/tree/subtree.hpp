@@ -187,7 +187,7 @@ class Subtree
 
   /** \brief Converts a serialized Subtree to its in-memory equivalent.
    */
-  Status to_in_memory_subtree(llfs::PageLoader& page_loader,
+  Status to_in_memory_subtree(BatchUpdateContext& context,
                               const TreeOptions& tree_options,
                               i32 height);
 

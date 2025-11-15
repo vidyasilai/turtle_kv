@@ -256,6 +256,14 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           return OkStatus();
         },
         [&](NeedsSplit needs_split) {
+          if (needs_split.too_many_segments && !needs_split.too_many_pivots &&
+              !needs_split.keys_too_large) {
+            Status flush_status = new_subtree->try_flush(update.context);
+            if (flush_status.ok() && batt::is_case<Viable>(new_subtree->get_viability())) {
+              return OkStatus();
+            }
+          }
+
           Status status =
               new_subtree->split_and_grow(update.context, tree_options, key_upper_bound);
 
@@ -626,7 +634,7 @@ StatusOr<KeyView> Subtree::try_borrow(BatchUpdateContext& context, Subtree& sibl
         BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryNode>>(sibling.impl_));
         auto& sibling_node_ptr = std::get<std::unique_ptr<InMemoryNode>>(sibling.impl_);
         BATT_CHECK(sibling_node_ptr);
-    
+
         return node->try_borrow(context, *sibling_node_ptr);
       });
 }
@@ -752,7 +760,7 @@ void Subtree::lock()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status Subtree::to_in_memory_subtree(llfs::PageLoader& page_loader,
+Status Subtree::to_in_memory_subtree(BatchUpdateContext& context,
                                      const TreeOptions& tree_options,
                                      i32 height)
 {
@@ -766,7 +774,7 @@ Status Subtree::to_in_memory_subtree(llfs::PageLoader& page_loader,
     llfs::PageLayoutId expected_layout = Subtree::expected_layout_for_height(height);
 
     StatusOr<llfs::PinnedPage> status_or_pinned_page = page_id_slot.load_through(
-        page_loader,
+        context.page_loader,
         llfs::PageLoadOptions{
             expected_layout,
             llfs::PinPageToJob::kDefault,
@@ -780,6 +788,16 @@ Status Subtree::to_in_memory_subtree(llfs::PageLoader& page_loader,
 
     if (height == 1) {
       auto new_leaf = std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
+      const PackedLeafPage& packed_leaf = PackedLeafPage::view_of(pinned_page);
+
+      std::vector<EditView> items;
+      for (const PackedKeyValue& pkv : packed_leaf.items_slice()) {
+        items.emplace_back(to_edit_view(pkv));
+      }
+      new_leaf->result_set.append(std::move(items));
+
+      new_leaf->set_edit_size_totals(context.compute_running_total(new_leaf->result_set));
+
       this->impl_ = std::move(new_leaf);
     } else {
       const PackedNodePage& packed_node = PackedNodePage::view_of(pinned_page);

@@ -731,13 +731,14 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
     need_update_buffer_compaction = true;
   }
 
-  BATT_REQUIRE_OK(this->children[sibling_i].to_in_memory_subtree(update_context.page_loader,
+  BATT_REQUIRE_OK(this->children[sibling_i].to_in_memory_subtree(update_context,
                                                                  this->tree_options,
                                                                  this->height - 1));
 
   // Call child.try_merge().
   //
   Subtree& sibling = this->children[sibling_i];
+  BATT_CHECK(batt::is_case<Viable>(sibling.get_viability()));
   StatusOr<Optional<Subtree>> status_or_merged = child.try_merge(update_context, sibling);
   if (!status_or_merged.ok()) {
     LOG(ERROR) << BATT_INSPECT(child.get_viability());
@@ -811,7 +812,7 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
 
   // Finally, split the newly merged child if needed.
   //
-  SubtreeViability merged_viability = merged_subtree.get_viability();
+  SubtreeViability merged_viability = this->children[pivot_to_overwrite].get_viability();
   if (batt::is_case<NeedsSplit>(merged_viability)) {
     BATT_REQUIRE_OK(this->split_child(update_context, pivot_to_overwrite));
   } else {

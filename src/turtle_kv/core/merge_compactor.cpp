@@ -495,6 +495,8 @@ template <bool kDecayToItems>
                   chunk_from_second.offset += first_size;
                 });
 
+  ans.chunks_.back().offset = first_size + second.chunks_.back().offset;
+
   first.clear();
   second.clear();
 
