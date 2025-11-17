@@ -321,7 +321,7 @@ Status Subtree::split_and_grow(BatchUpdateContext& context,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status Subtree::flush_and_shrink(BatchUpdateContext& context)
+Status Subtree::flush_and_shrink(BatchUpdateContext& context) noexcept
 {
   BATT_CHECK(!this->locked_.load());
 
@@ -343,6 +343,20 @@ Status Subtree::flush_and_shrink(BatchUpdateContext& context)
 
         if (!*status_or_new_root) {
           return OkStatus();
+        }
+
+        if (batt::is_case<std::unique_ptr<InMemoryLeaf>>((*status_or_new_root)->impl_)) {
+          const auto& leaf_ptr =
+              std::get<std::unique_ptr<InMemoryLeaf>>((*status_or_new_root)->impl_);
+          BATT_CHECK(leaf_ptr);
+
+          // If the new root that is returned is an empty leaf, set the root to be an empty
+          // subtree.
+          //
+          if (!leaf_ptr->get_items_size()) {
+            this->impl_ = llfs::PageIdSlot::from_page_id(llfs::PageId{});
+            return OkStatus();
+          }
         }
 
         this->impl_ = std::move((*status_or_new_root)->impl_);
@@ -573,7 +587,8 @@ StatusOr<Optional<Subtree>> Subtree::try_split(BatchUpdateContext& context)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context, Subtree& sibling)
+StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context,
+                                               Subtree& sibling) noexcept
 {
   BATT_CHECK(!this->locked_.load());
 
@@ -592,7 +607,7 @@ StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context, Subt
         BATT_CHECK(sibling_leaf_ptr);
 
         BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryLeaf> merged_leaf,  //
-                              leaf->try_merge(context, *sibling_leaf_ptr));
+                              leaf->try_merge(context, std::move(sibling_leaf_ptr)));
 
         return {Subtree{std::move(merged_leaf)}};
       },
@@ -615,7 +630,7 @@ StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context, Subt
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<KeyView> Subtree::try_borrow(BatchUpdateContext& context, Subtree& sibling)
+StatusOr<KeyView> Subtree::try_borrow(BatchUpdateContext& context, Subtree& sibling) noexcept
 {
   BATT_CHECK(!this->locked_.load());
 
@@ -762,7 +777,7 @@ void Subtree::lock()
 //
 Status Subtree::to_in_memory_subtree(BatchUpdateContext& context,
                                      const TreeOptions& tree_options,
-                                     i32 height)
+                                     i32 height) noexcept
 {
   BATT_CHECK_GT(height, 0);
 
@@ -771,7 +786,7 @@ Status Subtree::to_in_memory_subtree(BatchUpdateContext& context,
 
     BATT_CHECK(page_id_slot.is_valid());
 
-    llfs::PageLayoutId expected_layout = Subtree::expected_layout_for_height(height);
+    const llfs::PageLayoutId expected_layout = Subtree::expected_layout_for_height(height);
 
     StatusOr<llfs::PinnedPage> status_or_pinned_page = page_id_slot.load_through(
         context.page_loader,

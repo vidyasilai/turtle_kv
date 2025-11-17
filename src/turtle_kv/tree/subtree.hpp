@@ -140,16 +140,16 @@ class Subtree
 
   /** \brief Attempts to merge the given Subtree with one of its siblings. If successful, the
    * newly merged Subtree is returned.
-   * 
+   *
    * If no merge, returns None.
    */
-  StatusOr<Optional<Subtree>> try_merge(BatchUpdateContext& context, Subtree& sibling);
+  StatusOr<Optional<Subtree>> try_merge(BatchUpdateContext& context, Subtree& sibling) noexcept;
 
   /** \brief Attempts to make the Subtree viable by borrowing data from one of its siblings.
    * Called when the Subtree needs a merge, but borrowing is the only option to make the tree
    * viable.
    */
-  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, Subtree& sibling);
+  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, Subtree& sibling) noexcept;
 
   /** \brief Attempt to make the root viable by flushing a batch.
    */
@@ -189,7 +189,7 @@ class Subtree
    */
   Status to_in_memory_subtree(BatchUpdateContext& context,
                               const TreeOptions& tree_options,
-                              i32 height);
+                              i32 height) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
@@ -201,7 +201,7 @@ class Subtree
    * flushes the root's update buffer until its is either empty
    * (causing the tree to shrink in height) or until it gains more pivots.
    */
-  Status flush_and_shrink(BatchUpdateContext& context);
+  Status flush_and_shrink(BatchUpdateContext& context) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

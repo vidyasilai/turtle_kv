@@ -692,8 +692,16 @@ Status InMemoryNode::split_child(BatchUpdateContext& update_context, i32 pivot_i
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i)
+Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i) noexcept
 {
+  // Special case: we have a tree composed of one node (root) and one leaf (its only child).
+  // In this case, don't progress with the rest of the function, as we are in the middle of a
+  // flush and shrink.
+  //
+  if (this->height == 2 && this->pivot_count() == 1) {
+    return OkStatus();
+  }
+
   Subtree& child = this->children[pivot_i];
 
   // Decide which sibling to merge with. Edge cases: child that needs merge is the leftmost or
@@ -763,8 +771,9 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
   // Erase rightmost of {child subtree, sibling} in this->child_pages, overwrite leftmost
   // with new PinnedPage{}.
   //
-  i32 pivot_to_erase = std::max(pivot_i, sibling_i);
-  i32 pivot_to_overwrite = std::min(pivot_i, sibling_i);
+  const i32 pivot_to_erase = std::max(pivot_i, sibling_i);
+  const i32 pivot_to_overwrite = std::min(pivot_i, sibling_i);
+  const usize old_pivot_count = this->pivot_count();
 
   this->child_pages[pivot_to_overwrite] = llfs::PinnedPage{};
   this->child_pages.erase(this->child_pages.begin() + pivot_to_erase);
@@ -804,7 +813,7 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
   //
   this->pivot_keys_.erase(this->pivot_keys_.begin() + pivot_to_erase);
 
-  if ((usize)pivot_to_erase == this->children.size()) {
+  if ((usize)pivot_to_erase == old_pivot_count - 1) {
     BATT_ASSIGN_OK_RESULT(
         this->max_key_,
         this->children.back().get_max_key(update_context.page_loader, this->child_pages.back()));
@@ -824,7 +833,7 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<Optional<Subtree>> InMemoryNode::flush_and_shrink(BatchUpdateContext& context)
+StatusOr<Optional<Subtree>> InMemoryNode::flush_and_shrink(BatchUpdateContext& context) noexcept
 {
   // If more than one pivot exists, nothings needs to be done.
   //
@@ -833,7 +842,7 @@ StatusOr<Optional<Subtree>> InMemoryNode::flush_and_shrink(BatchUpdateContext& c
     return None;
   }
 
-  i32 single_pivot_i = 0;
+  const i32 single_pivot_i = 0;
   BATT_CHECK_EQ(this->pending_bytes.size(), 1);
   usize pending_bytes_count = this->pending_bytes[single_pivot_i];
 
@@ -857,7 +866,7 @@ StatusOr<Optional<Subtree>> InMemoryNode::flush_and_shrink(BatchUpdateContext& c
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateContext& context,
-                                                                InMemoryNode& sibling)
+                                                                InMemoryNode& sibling) noexcept
 {
   // If merging both full nodes will cause the merged node's pivot count to exceed the max
   // possible pivot count, return null so that we can try a borrow.
@@ -872,6 +881,8 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateConte
 
   const auto concat_metadata = [&](InMemoryNode& left, InMemoryNode& right) {
     new_node->max_key_ = right.max_key_;
+
+    new_node->height = left.height;
 
     new_node->latest_flush_pivot_i_ = None;
 
@@ -938,30 +949,12 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateConte
                   [&](SegmentedLevel& right_segmented_level) -> Status {
                     // When merging a MergedLevel and a SegmentedLevel, create a new MergedLevel.
                     //
-                    MergedLevel new_merged_level;
-                    HasPageRefs has_page_refs{false};
-                    Status segment_load_status;
-
-                    Slice<Level> levels_to_merge =
-                        as_slice(right.update_buffer.levels.data() + i, usize{1});
-
-                    BATT_ASSIGN_OK_RESULT(  //
-                        new_merged_level.result_set,
-                        context.merge_compact_edits</*decay_to_items=*/false>(  //
-                            global_max_key(),
-                            [&](MergeCompactor& compactor) -> Status {
-                              compactor.push_level(left_merged_level.result_set.live_edit_slices());
-                              right.push_levels_to_merge(compactor,
-                                                         context.page_loader,
-                                                         segment_load_status,
-                                                         has_page_refs,
-                                                         levels_to_merge,
-                                                         /*min_pivot_i=*/0,
-                                                         /*only_pivot=*/false);
-                              return OkStatus();
-                            }));
-
-                    BATT_REQUIRE_OK(segment_load_status);
+                    BATT_ASSIGN_OK_RESULT(
+                        MergedLevel new_merged_level,
+                        UpdateBuffer::merge_segmented_and_merged_level(context,
+                                                                       left_merged_level,
+                                                                       right_segmented_level,
+                                                                       right));
 
                     new_node->update_buffer.levels.emplace_back(std::move(new_merged_level));
 
@@ -982,31 +975,12 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateConte
                     return OkStatus();
                   },
                   [&](MergedLevel& right_merged_level) -> Status {
-                    MergedLevel new_merged_level;
-                    HasPageRefs has_page_refs{false};
-                    Status segment_load_status;
-
-                    Slice<Level> levels_to_merge =
-                        as_slice(left.update_buffer.levels.data() + i, usize{1});
-
-                    BATT_ASSIGN_OK_RESULT(  //
-                        new_merged_level.result_set,
-                        context.merge_compact_edits</*decay_to_items=*/false>(  //
-                            global_max_key(),
-                            [&](MergeCompactor& compactor) -> Status {
-                              left.push_levels_to_merge(compactor,
-                                                        context.page_loader,
-                                                        segment_load_status,
-                                                        has_page_refs,
-                                                        levels_to_merge,
-                                                        /*min_pivot_i=*/0,
-                                                        /*only_pivot=*/false);
-                              compactor.push_level(
-                                  right_merged_level.result_set.live_edit_slices());
-                              return OkStatus();
-                            }));
-
-                    BATT_REQUIRE_OK(segment_load_status);
+                    BATT_ASSIGN_OK_RESULT(
+                        MergedLevel new_merged_level,
+                        UpdateBuffer::merge_segmented_and_merged_level(context,
+                                                                       right_merged_level,
+                                                                       left_segmented_level,
+                                                                       left));
 
                     new_node->update_buffer.levels.emplace_back(std::move(new_merged_level));
 
@@ -1067,7 +1041,8 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateConte
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemoryNode& sibling)
+StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context,
+                                           InMemoryNode& sibling) noexcept
 {
   BATT_CHECK(batt::is_case<Viable>(sibling.get_viability()));
 
@@ -1212,7 +1187,7 @@ StatusOr<KeyView> InMemoryNode::try_borrow(BatchUpdateContext& context, InMemory
   BATT_REQUIRE_OK(this->update_buffer_insert(borrowed_pivot_batch));
 
   // Adjust the update buffer levels metadata in the sibling now that the borrowed updates have
-  // been extracted. 
+  // been extracted.
   //
   for (Level& level : sibling.update_buffer.levels) {
     batt::case_of(  //
@@ -2157,6 +2132,43 @@ void InMemoryNode::UpdateBuffer::SegmentedLevel::check_items_sorted(
       item_i += slice_impl.size();
     });
   }
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+/*static*/ StatusOr<MergedLevel> InMemoryNode::UpdateBuffer::merge_segmented_and_merged_level(
+    BatchUpdateContext& context,
+    MergedLevel& merged_level,
+    SegmentedLevel& segmented_level,
+    InMemoryNode& segmented_level_node) noexcept
+{
+  MergedLevel new_merged_level;
+  HasPageRefs has_page_refs{false};
+  Status segment_load_status;
+
+  BoxedSeq<EditSlice> segmented_level_slices =
+      SegmentedLevelScanner<const InMemoryNode, const SegmentedLevel, llfs::PageLoader>{
+          segmented_level_node,
+          segmented_level,
+          context.page_loader,
+          llfs::PinPageToJob::kDefault,
+          segment_load_status,
+          /*min_pivot_i=*/0}  //
+      | seq::boxed();
+
+  BATT_ASSIGN_OK_RESULT(  //
+      new_merged_level.result_set,
+      context.merge_compact_edits</*decay_to_items=*/false>(  //
+          global_max_key(),
+          [&](MergeCompactor& compactor) -> Status {
+            compactor.push_level(merged_level.result_set.live_edit_slices());
+            compactor.push_level(std::move(segmented_level_slices));
+            return OkStatus();
+          }));
+
+  BATT_REQUIRE_OK(segment_load_status);
+
+  return new_merged_level;
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------

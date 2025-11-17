@@ -349,6 +349,12 @@ struct InMemoryNode {
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+    static StatusOr<MergedLevel> merge_segmented_and_merged_level(
+        BatchUpdateContext& context,  //
+        MergedLevel& merged_level,
+        SegmentedLevel& segmented_level,
+        InMemoryNode& segmented_level_node) noexcept;
+
     SmallFn<void(std::ostream&)> dump() const;
 
     u64 compute_active_segmented_levels() const;
@@ -543,13 +549,13 @@ struct InMemoryNode {
   /** \brief Merge the node with one of its siblings and return the newly merged node.
    */
   StatusOr<std::unique_ptr<InMemoryNode>> try_merge(BatchUpdateContext& context,
-                                                    InMemoryNode& sibling);
+                                                    InMemoryNode& sibling) noexcept;
 
   /** \brief Attempts to make the node (that needs a merge) viable by borrowing data
    * from one of its siblings. If successful, returns the new pivot key to be set in the parent
    * of these two nodes to separate them.
    */
-  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, InMemoryNode& sibling);
+  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, InMemoryNode& sibling) noexcept;
 
   /** \brief Splits the specified child, inserting a new pivot immediately after `pivot_i`.
    */
@@ -557,13 +563,13 @@ struct InMemoryNode {
 
   /** \brief Merges the specified child with a sibling.
    */
-  Status merge_child(BatchUpdateContext& update_context, i32 pivot_i);
+  Status merge_child(BatchUpdateContext& update_context, i32 pivot_i) noexcept;
 
   /** \brief If the node has a single pivot, attempts to flush updates out of the update buffer
    * to grow the number of pivots. If all the updates are flushed and still only a single pivot
    * remains, the single pivot (child) is returned.
    */
-  StatusOr<Optional<Subtree>> flush_and_shrink(BatchUpdateContext& context);
+  StatusOr<Optional<Subtree>> flush_and_shrink(BatchUpdateContext& context) noexcept;
 
   /** \brief Returns true iff there are no MergedLevels or unserialized Subtree children in this
    * node.

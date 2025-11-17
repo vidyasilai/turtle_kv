@@ -134,7 +134,7 @@ void verify_table_point_queries(Table& expected_table, Table& actual_table, Rng&
   }
 }
 
-/*void verify_range_scan(LatencyMetric* scan_latency,
+void verify_range_scan(LatencyMetric* scan_latency,
                        Table& expected_table,
                        const Slice<std::pair<KeyView, ValueView>>& actual_read_items,
                        const KeyView& min_key,
@@ -167,7 +167,7 @@ void verify_table_point_queries(Table& expected_table, Table& actual_table, Rng&
     ++expected_item_iter;
     ++actual_item_iter;
   }
-} */
+}
 
 struct SubtreeBatchUpdateScenario {
   static std::atomic<usize>& size_tiered_count()
@@ -397,7 +397,7 @@ void SubtreeBatchUpdateScenario::run()
         pending_deletes.clear();
       }
 
-      if (i > 0) {
+      if (i % 5 == 0) {
         BATT_CHECK(pending_deletes.empty());
         for (const EditView& edit : update.result_set.get()) {
           pending_deletes.emplace_back(edit.key);
@@ -458,7 +458,7 @@ void SubtreeBatchUpdateScenario::run()
           << BATT_INSPECT(this->seed) << BATT_INSPECT(i);
 
       {
-        /*auto root_ptr = std::make_shared<Subtree>(tree.clone_serialized_or_panic());
+        auto root_ptr = std::make_shared<Subtree>(tree.clone_serialized_or_panic());
         std::unique_ptr<llfs::PageCacheJob> scanner_page_job = page_cache->new_job();
 
         const usize scan_len = pick_scan_len(rng);
@@ -494,7 +494,7 @@ void SubtreeBatchUpdateScenario::run()
                                                   as_slice(scan_items_buffer.data(), n_read),
                                                   min_key,
                                                   scan_len))
-            << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len); */
+            << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len);
       }
 
       if (my_id == 0) {
@@ -516,6 +516,7 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
 {
   const usize key_size = 24;
   const usize value_size = 100;
+  const usize chi = 4;
 
   TreeOptions tree_options = TreeOptions::with_default_values()  //
                                  .set_leaf_size(32 * kKiB)
@@ -532,7 +533,7 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
   std::string value_str = std::string(value_size, 'a');
   ValueView value = ValueView::from_str(value_str);
 
-  std::default_random_engine rng{/*seed=*/1};
+  std::default_random_engine rng{/*seed=*/3};
   RandomStringGenerator generate_key;
   for (usize i = 0; i < total_batches * items_per_leaf; ++i) {
     keys.emplace_back(generate_key(rng));
@@ -552,8 +553,10 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
                              /*byte_capacity=*/1500 * kMiB);
 
   Subtree tree = Subtree::make_empty();
-
   ASSERT_TRUE(tree.is_serialized());
+
+  turtle_kv::OrderedMapTable<absl::btree_map<std::string_view, std::string_view>> expected_table;
+  SubtreeTable actual_table{*page_cache, tree_options, tree};
 
   batt::WorkerPool& worker_pool = batt::WorkerPool::null_pool();
 
@@ -590,10 +593,9 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
     return current_batch;
   };
 
-  const auto apply_tree_updates = [&](auto batch_creation_func) {
+  const auto apply_tree_updates = [&](auto batch_creation_func, bool perform_scan) {
     for (usize i = 0; i < total_batches; ++i) {
       std::vector<EditView> current_batch = batch_creation_func(i);
-      // LOG(INFO) << "current batch: " << i << ", size: " << current_batch.size();
 
       ResultSet<false> result;
       result.append(std::move(current_batch));
@@ -610,60 +612,119 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
       };
       update.update_edit_size_totals();
 
-      StatusOr<i32> tree_height = tree.get_height(*page_loader);
-      ASSERT_TRUE(tree_height.ok()) << BATT_INSPECT(tree_height);
-      // LOG(INFO) << "tree height at batch_number " << i << ": " << *tree_height;
+      Status table_update_status = update_table(expected_table, update.result_set);
+      ASSERT_TRUE(table_update_status.ok()) << BATT_INSPECT(table_update_status);
+
+      StatusOr<i32> tree_height_before = tree.get_height(*page_loader);
+      ASSERT_TRUE(tree_height_before.ok()) << BATT_INSPECT(tree_height_before);
 
       Status status =  //
           tree.apply_batch_update(tree_options,
-                                  ParentNodeHeight{*tree_height + 1},
+                                  ParentNodeHeight{*tree_height_before + 1},
                                   update,
                                   /*key_upper_bound=*/global_max_key(),
                                   IsRoot{true});
 
       ASSERT_TRUE(status.ok()) << BATT_INSPECT(status) << BATT_INSPECT(i);
-      ASSERT_FALSE(tree.is_serialized());
+
+      StatusOr<i32> tree_height_after = tree.get_height(*page_loader);
+      ASSERT_TRUE(tree_height_after.ok()) << BATT_INSPECT(tree_height_after);
+
+      if (*tree_height_after == 0) {
+        ASSERT_LT(*tree_height_after, *tree_height_before);
+        ASSERT_TRUE(tree.is_serialized());
+        break;
+      } else {
+        ASSERT_FALSE(tree.is_serialized());
+      }
+
       ASSERT_FALSE(batt::is_case<NeedsSplit>(tree.get_viability()));
+
+      ASSERT_NO_FATAL_FAILURE(
+          verify_table_point_queries(expected_table, actual_table, rng, batt::log2_ceil(i)))
+          << BATT_INSPECT(i);
+
+      if (((i + 1) % chi) == 0) {
+        LOG(INFO) << "Taking checkpoint...";
+
+        std::unique_ptr<llfs::PageCacheJob> page_job = page_cache->new_job();
+        TreeSerializeContext context{tree_options, *page_job, worker_pool};
+
+        Status start_status = tree.start_serialize(context);
+        ASSERT_TRUE(start_status.ok()) << BATT_INSPECT(start_status);
+
+        Status build_status = context.build_all_pages();
+        ASSERT_TRUE(build_status.ok()) << BATT_INSPECT(build_status);
+
+        StatusOr<llfs::PageId> finish_status = tree.finish_serialize(context);
+        ASSERT_TRUE(finish_status.ok()) << BATT_INSPECT(finish_status);
+
+        page_job->new_root(*finish_status);
+        Status commit_status = llfs::unsafe_commit_job(std::move(page_job));
+        ASSERT_TRUE(commit_status.ok()) << BATT_INSPECT(commit_status);
+
+        ASSERT_NO_FATAL_FAILURE(
+          verify_table_point_queries(expected_table, actual_table, rng, batt::log2_ceil(i)))
+          << BATT_INSPECT(i);
+
+        if (perform_scan) {
+          auto root_ptr = std::make_shared<Subtree>(tree.clone_serialized_or_panic());
+          std::unique_ptr<llfs::PageCacheJob> scanner_page_job = page_cache->new_job();
+
+          const usize scan_len = 20;
+          std::array<std::pair<KeyView, ValueView>, kMaxScanSize> scan_items_buffer;
+          KeyView min_key = update.result_set.get_min_key();
+
+          KVStoreScanner kv_scanner{*page_loader,
+                                    root_ptr->page_id_slot_or_panic(),
+                                    BATT_OK_RESULT_OR_PANIC(root_ptr->get_height(*page_loader)),
+                                    min_key,
+                                    tree_options.trie_index_sharded_view_size(),
+                                    None};
+
+          usize n_read = 0;
+          {
+            BATT_CHECK_OK(kv_scanner.start());
+            for (auto& kv_pair : scan_items_buffer) {
+              Optional<EditView> item = kv_scanner.next();
+              if (!item) {
+                break;
+              }
+              kv_pair.first = item->key;
+              kv_pair.second = item->value;
+              ++n_read;
+              if (n_read == scan_len) {
+                break;
+              }
+            }
+          }
+          ASSERT_NO_FATAL_FAILURE(verify_range_scan(nullptr,
+                                                    expected_table,
+                                                    as_slice(scan_items_buffer.data(), n_read),
+                                                    min_key,
+                                                    scan_len))
+              << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len); 
+        }
+
+        page_loader.emplace(*page_cache);
+      }
     }
   };
 
-  apply_tree_updates(create_insertion_batch);
+  LOG(INFO) << "Inserting key/value pairs into tree..";
+  apply_tree_updates(create_insertion_batch, false);
 
-  std::unique_ptr<llfs::PageCacheJob> page_job = page_cache->new_job();
-  TreeSerializeContext context{tree_options, *page_job, worker_pool};
-
-  Status start_status = tree.start_serialize(context);
-  ASSERT_TRUE(start_status.ok()) << BATT_INSPECT(start_status);
-
-  Status build_status = context.build_all_pages();
-  ASSERT_TRUE(build_status.ok()) << BATT_INSPECT(build_status);
-
-  StatusOr<llfs::PageId> finish_status = tree.finish_serialize(context);
-  ASSERT_TRUE(finish_status.ok()) << BATT_INSPECT(finish_status);
-
-  page_job->new_root(*finish_status);
-  Status commit_status = llfs::unsafe_commit_job(std::move(page_job));
-  ASSERT_TRUE(commit_status.ok()) << BATT_INSPECT(commit_status);
-
-  page_loader.emplace(*page_cache);
-
-  apply_tree_updates(create_deletion_batch);
-
-  StatusOr<i32> tree_height = tree.get_height(*page_loader);
-  ASSERT_TRUE(tree_height.ok()) << BATT_INSPECT(tree_height);
-
-  /*BatchUpdateContext update_context{
-      .worker_pool = worker_pool,
-      .page_loader = *page_loader,
-      .cancel_token = batt::CancelToken{},
-  };
-  while (*tree_height > 2) {
-    Status flush_status = tree.try_flush(update_context);
-    ASSERT_TRUE(flush_status.ok());
-
-    tree_height = tree.get_height(*page_loader);
+  LOG(INFO) << "Deleting key/value pairs from tree...";
+  for (usize i = 0; i < total_batches; ++i) {
+    bool perform_scan = i == 0 ? true : false;
+    StatusOr<i32> tree_height = tree.get_height(*page_loader);
     ASSERT_TRUE(tree_height.ok()) << BATT_INSPECT(tree_height);
-  } */
+    if (*tree_height > 0) {
+      apply_tree_updates(create_deletion_batch, perform_scan);
+    } else {
+      break;
+    }
+  }
 }
 
 }  // namespace

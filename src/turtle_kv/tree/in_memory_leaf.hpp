@@ -93,7 +93,7 @@ struct InMemoryLeaf {
   StatusOr<SplitPlan> make_split_plan() const;
 
   StatusOr<std::unique_ptr<InMemoryLeaf>> try_merge(BatchUpdateContext& context,
-                                                    InMemoryLeaf& sibling);
+                                                    std::unique_ptr<InMemoryLeaf> sibling) noexcept;
 
   Status start_serialize(TreeSerializeContext& context);
 

@@ -461,7 +461,8 @@ Status KVStoreScanner::set_next_item()
       LatencyTimer timer{batt::Every2ToTheConst<8>{},
                          KVStoreScanner::metrics().heap_remove_latency};
       this->heap_.remove_first();
-      this->needs_resume_ = true;
+      //this->needs_resume_ = true;
+      BATT_REQUIRE_OK(this->resume());
     }
   }
 

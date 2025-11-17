@@ -151,33 +151,30 @@ auto InMemoryLeaf::make_split_plan() const -> StatusOr<SplitPlan>
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<std::unique_ptr<InMemoryLeaf>> InMemoryLeaf::try_merge(BatchUpdateContext& context,
-                                                                InMemoryLeaf& sibling)
+StatusOr<std::unique_ptr<InMemoryLeaf>> InMemoryLeaf::try_merge(
+    BatchUpdateContext& context,
+    std::unique_ptr<InMemoryLeaf> sibling) noexcept
 {
+  if (this->result_set.empty()) {
+    return {std::move(sibling)};
+  }
+
   auto merged_leaf =
       std::make_unique<InMemoryLeaf>(batt::make_copy(this->pinned_leaf_page_), this->tree_options);
 
   // Concatenate the two leaves' result sets in the correct order.
   //
-  if (this->result_set.empty()) {
-    merged_leaf->result_set = std::move(sibling.result_set);
-    merged_leaf->shared_edit_size_totals_ = std::move(sibling.shared_edit_size_totals_);
-    merged_leaf->edit_size_totals.emplace(merged_leaf->shared_edit_size_totals_->begin(),
-                                          merged_leaf->shared_edit_size_totals_->end());
+  bool right_sibling = this->get_max_key() < sibling->get_min_key();
+  if (right_sibling) {
+    merged_leaf->result_set =
+        MergeCompactor::ResultSet<true>::concat(std::move(this->result_set),
+                                                std::move(sibling->result_set));
   } else {
-    bool right_sibling = this->get_max_key() < sibling.get_min_key();
-    if (right_sibling) {
-      merged_leaf->result_set =
-          MergeCompactor::ResultSet<true>::concat(std::move(this->result_set),
-                                                  std::move(sibling.result_set));
-    } else {
-      merged_leaf->result_set =
-          MergeCompactor::ResultSet<true>::concat(std::move(sibling.result_set),
-                                                  std::move(this->result_set));
-    }
-
-    merged_leaf->set_edit_size_totals(context.compute_running_total(merged_leaf->result_set));
+    merged_leaf->result_set = MergeCompactor::ResultSet<true>::concat(std::move(sibling->result_set),
+                                                                      std::move(this->result_set));
   }
+
+  merged_leaf->set_edit_size_totals(context.compute_running_total(merged_leaf->result_set));
 
   return {std::move(merged_leaf)};
 }
