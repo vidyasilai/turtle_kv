@@ -757,7 +757,6 @@ StatusOr<usize> KVStore::scan_keys(const KeyView& min_key,
   this->metrics_.scan_count.add(1);
 
   KVStoreScanner scanner{*this, min_key};
-  scanner.set_keys_only(true);
   BATT_REQUIRE_OK(scanner.start());
 
   return scanner.read_keys(items_out);

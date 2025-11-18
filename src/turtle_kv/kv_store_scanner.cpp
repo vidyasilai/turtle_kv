@@ -435,17 +435,15 @@ Status KVStoreScanner::set_next_item()
     ScanLevel* scan_level = this->heap_.first();
 
     if (!this->next_item_) {
-      this->next_item_.emplace(scan_level->item(this->keys_only_));
+      this->next_item_.emplace(scan_level->item());
 
     } else if (this->next_item_->key == scan_level->key) {
-      if (!this->keys_only_ && this->next_item_->needs_combine()) {
+      if (this->next_item_->needs_combine()) {
         this->next_item_->value = combine(this->next_item_->value, scan_level->value());
       }
 
     } else {
-      // TODO [vsilai 11-10-2025]: need to fix key only scans to look at values.
-      //
-      if (!this->keys_only_ && this->next_item_->value == ValueView::deleted()) {
+      if (this->next_item_->value == ValueView::deleted()) {
         this->next_item_ = None;
         continue;
       } else {
@@ -575,7 +573,7 @@ Status KVStoreScanner::set_next_item()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-EditView KVStoreScanner::ScanLevel::item(bool key_only) const
+EditView KVStoreScanner::ScanLevel::item() const
 {
   return batt::case_of(
       this->state_impl,
@@ -583,58 +581,37 @@ EditView KVStoreScanner::ScanLevel::item(bool key_only) const
         BATT_PANIC() << "illegal state";
         BATT_UNREACHABLE();
       },
-      [this, key_only](const MemTableScanState<ARTBase::Synchronized::kTrue>& state) -> EditView {
+      [this](const MemTableScanState<ARTBase::Synchronized::kTrue>& state) -> EditView {
         MemTableEntry entry;
         const bool found = state.mem_table_->hash_index().find_key(this->key, entry);
         BATT_CHECK(found);
 
-        if (key_only) {
-          return EditView{entry.key_, ValueView{}};
-        }
         return EditView{entry.key_, entry.value_};
       },
-      [this, key_only](const MemTableScanState<ARTBase::Synchronized::kFalse>& state) -> EditView {
+      [this](const MemTableScanState<ARTBase::Synchronized::kFalse>& state) -> EditView {
         const MemTableEntry* entry = state.mem_table_->hash_index().unsynchronized_find_key(key);
         BATT_CHECK_NOT_NULLPTR(entry);
 
-        if (key_only) {
-          return EditView{entry->key_, ValueView{}};
-        }
         return EditView{entry->key_, entry->value_};
       },
-      [key_only](const MemTableValueScanState<ARTBase::Synchronized::kTrue>& state) -> EditView {
+      [](const MemTableValueScanState<ARTBase::Synchronized::kTrue>& state) -> EditView {
         const MemTableValueEntry& entry = state.art_scanner_->get_value();
-        if (key_only) {
-          return EditView{entry.key_view(), ValueView{}};
-        }
         return EditView{entry.key_view(), entry.value_view()};
       },
-      [key_only](const MemTableValueScanState<ARTBase::Synchronized::kFalse>& state) -> EditView {
+      [](const MemTableValueScanState<ARTBase::Synchronized::kFalse>& state) -> EditView {
         const MemTableValueEntry& entry = state.art_scanner_->get_value();
-        if (key_only) {
-          return EditView{entry.key_view(), ValueView{}};
-        }
         return EditView{entry.key_view(), entry.value_view()};
       },
       [](const Slice<const EditView>& state) -> EditView {
         return state.front();
       },
-      [this, key_only](const TreeLevelScanState& state) -> EditView {
-        if (key_only) {
-          return EditView{this->key, ValueView{}};
-        }
+      [this](const TreeLevelScanState& state) -> EditView {
         return EditView{this->key, get_value(state.kv_slice.front())};
       },
-      [this, key_only](const TreeLevelScanShardedState& state) -> EditView {
-        if (key_only) {
-          return EditView{this->key, ValueView{}};
-        }
+      [this](const TreeLevelScanShardedState& state) -> EditView {
         return EditView{this->key, state.kv_slice.front_value()};
       },
-      [this, key_only](const ShardedLeafScanState& state) -> EditView {
-        if (key_only) {
-          return EditView{this->key, ValueView{}};
-        }
+      [this](const ShardedLeafScanState& state) -> EditView {
         return EditView{this->key, BATT_OK_RESULT_OR_PANIC(state.leaf_scanner_->front_value())};
       });
 }

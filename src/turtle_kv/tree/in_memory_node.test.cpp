@@ -282,7 +282,6 @@ TEST(InMemoryNodeTest, Subtree)
   if (n_threads != 0) {
     runner.n_threads(n_threads);
   }
-  runner.n_threads(usize{1});
   runner.n_seeds(n_seeds);
 
   if (n_seeds < 128) {
