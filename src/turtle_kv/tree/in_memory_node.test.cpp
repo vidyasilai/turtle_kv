@@ -326,7 +326,7 @@ void SubtreeBatchUpdateScenario::run()
   }
 
   TreeOptions tree_options = TreeOptions::with_default_values()  //
-                                 .set_leaf_size(32 * kKiB)
+                                 .set_leaf_size(512 * kKiB)
                                  .set_node_size(4 * kKiB)
                                  .set_key_size_hint(24)
                                  .set_value_size_hint(100)
