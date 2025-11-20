@@ -22,14 +22,14 @@ namespace turtle_kv {
 {
   VLOG(1) << "Entering Checkpoint::recover";
 
-  // TODO: [Gabe Bornstein 11/4/25] Consider, error handling for invalid checkpoint
-  //
+  BATT_CHECK_GT(packed_checkpoint.batch_upper_bound, 0)
+      << "Invalid PackedCheckpoint: batch_upper_bound==0 indicates no checkpoint.";
 
   const llfs::PageId tree_root_id = packed_checkpoint.new_tree_root.as_page_id();
 
   Subtree tree = Subtree::from_page_id(tree_root_id);
 
-  batt::StatusOr<i32> height = tree.get_height(*(checkpoint_volume.new_job()));
+  batt::StatusOr<i32> height = tree.get_height(checkpoint_volume.cache());
 
   BATT_REQUIRE_OK(height);
   BATT_ASSIGN_OK_RESULT(llfs::SlotReadLock slot_read_lock,

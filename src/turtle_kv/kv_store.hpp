@@ -166,8 +166,7 @@ class KVStore : public Table
   void set_checkpoint_distance(usize chi) noexcept;
 
   static batt::StatusOr<turtle_kv::Checkpoint> recover_latest_checkpoint(
-      llfs::Volume& checkpoint_log_volume,
-      std::filesystem::path checkpoint_log_dir);
+      llfs::Volume& checkpoint_log_volume);
 
   usize get_checkpoint_distance() const noexcept
   {

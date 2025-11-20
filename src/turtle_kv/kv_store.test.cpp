@@ -322,9 +322,6 @@ class CheckpointTest
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-// TODO: [Gabe Bornstein 10/30/25] Consider making the test generic so we can set different
-// checkpoint distances and check recovery after variable number of checkpoints have been created
-//
 TEST_P(CheckpointTest, CheckpointRecovery)
 {
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
@@ -407,9 +404,7 @@ TEST_P(CheckpointTest, CheckpointRecovery)
 
     ASSERT_TRUE(actual_put_status.ok()) << BATT_INSPECT(actual_put_status);
 
-    // TODO: Turn into a VLOG(1) statement
-    //
-    LOG(INFO) << "Put key== " << key << ", value==" << value;
+    VLOG(3) << "Put key== " << key << ", value==" << value;
 
     ++keys_since_checkpoint;
 
@@ -418,8 +413,8 @@ TEST_P(CheckpointTest, CheckpointRecovery)
     if (keys_since_checkpoint >= keys_per_checkpoint && this->num_checkpoints_to_create != 0) {
       keys_since_checkpoint = 0;
       ++num_checkpoints_created;
-      LOG(INFO) << "Created " << num_checkpoints_created << " checkpoints";
       BATT_CHECK_OK(actual_table.force_checkpoint());
+      VLOG(2) << "Created " << num_checkpoints_created << " checkpoints";
       if (num_checkpoints_created == this->num_checkpoints_to_create) {
         break;
       }
@@ -431,11 +426,12 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   if (num_checkpoints_created < this->num_checkpoints_to_create) {
     BATT_CHECK_OK(actual_table.force_checkpoint());
     ++num_checkpoints_created;
-    LOG(INFO) << "Created " << num_checkpoints_created << " checkpoints after rounding error";
+    VLOG(1) << "Created " << num_checkpoints_created << " checkpoints after rounding error";
   }
 
-  BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create) << "Did not take the "
-                << "correct number of checkponts. There is a bug in this test.";
+  BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create)
+      << "Did not take the "
+      << "correct number of checkponts. There is a bug in this test.";
 
   // Test recovering checkpoints after stress test
   //
@@ -454,7 +450,7 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   BATT_CHECK_OK(checkpoint_log_volume);
 
   batt::StatusOr<turtle_kv::Checkpoint> checkpoint =
-      KVStore::recover_latest_checkpoint(**checkpoint_log_volume, test_kv_store_dir);
+      KVStore::recover_latest_checkpoint(**checkpoint_log_volume);
 
   if (!checkpoint.ok()) {
     EXPECT_TRUE(checkpoint.ok());
@@ -465,6 +461,8 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   //
   if (checkpoint->batch_upper_bound() == turtle_kv::DeltaBatchId::from_u64(0)) {
     LOG(INFO) << "No checkpoint data found. Exiting the test before checking keys.";
+    EXPECT_TRUE(this->num_checkpoints_to_create == 0 || this->num_puts == 0)
+        << "Expected checkpoint data but found none.";
     return;
   }
 
@@ -489,19 +487,23 @@ TEST_P(CheckpointTest, CheckpointRecovery)
 INSTANTIATE_TEST_SUITE_P(
     RecoveringCheckpoints,
     CheckpointTest,
-    // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't getting any
-    // checkpoint data for this case, but we are forcing a checkpoint.
-    testing::Values(CheckpointTestParams(1, 1),
-                    // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't
-                    // getting any checkpoint data for this case, but we are
-                    // forcing a checkpoint. Maybe keys aren't being flushed?
-                    CheckpointTestParams(1, 100),
-                    CheckpointTestParams(100, 100),
-                    CheckpointTestParams(2, 100),
-                    CheckpointTestParams(1, 100000),
-                    CheckpointTestParams(1, 0),
-                    CheckpointTestParams(0, 100),
-                    CheckpointTestParams(5, 100000),
-                    CheckpointTestParams(10, 100000)
-                    //  TODO: [Gabe Bornstein 11/6/25] Sporadic Failing. Likely cause by keys not being flushed before that last checkpoint is taken. Need fsync to resolve.
-                    /*CheckpointTestParams(101, 100000)*/));
+    testing::Values(
+        // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't getting any
+        // checkpoint data for this case, but we are forcing a checkpoint.
+        // CheckpointTestParams(1, 1),
+        // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't
+        // getting any checkpoint data for this case, but we are
+        // forcing a checkpoint. Maybe keys aren't being flushed?
+        // CheckpointTestParams(1, 100),
+        // TODO: [Gabe Bornstein 11/5/25] Investigate: We ARE
+        // getting checkpoint data for this case. Does taking additional checkpoints flush keys?
+        CheckpointTestParams(2, 100),
+        CheckpointTestParams(100, 100),
+        CheckpointTestParams(1, 100000),
+        CheckpointTestParams(1, 0),
+        CheckpointTestParams(0, 100),
+        CheckpointTestParams(5, 100000),
+        CheckpointTestParams(10, 100000)
+        //  TODO: [Gabe Bornstein 11/6/25] Sporadic Failing. Likely cause by keys not
+        //  being flushed before that last checkpoint is taken. Need fsync to resolve.
+        /*CheckpointTestParams(101, 100000)*/));

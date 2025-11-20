@@ -29,6 +29,9 @@ class Checkpoint
  public:
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief Returns a valid, in-memory Checkpoint from the given packed checkpoint data. Requires
+   * that a valid PackedCheckpoint, and a valid Slot Range for the checkpoint is passed.
+   */
   static StatusOr<Checkpoint> recover(llfs::Volume& checkpoint_volume,
                                       llfs::SlotParse& slot,
                                       const PackedCheckpoint& checkpoint) noexcept;
