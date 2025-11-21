@@ -710,7 +710,7 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
     }
   };
 
-  LOG(INFO) << "Inserting key/value pairs into tree..";
+  LOG(INFO) << "Inserting key/value pairs into tree...";
   apply_tree_updates(create_insertion_batch, false);
 
   LOG(INFO) << "Deleting key/value pairs from tree...";

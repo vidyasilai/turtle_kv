@@ -320,6 +320,8 @@ struct PackedLeafLayoutPlan {
   usize page_size;
   usize key_count;
   usize trie_index_reserved_size;
+  usize avg_key_len;
+  usize drop_count;
 
   usize trie_index_begin;
   usize trie_index_end;
@@ -361,6 +363,8 @@ struct PackedLeafLayoutPlan {
   }
 
   void check_valid(std::string_view label) const;
+
+  usize compute_trie_step_size() const;
 };
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -370,6 +374,8 @@ BATT_OBJECT_PRINT_IMPL((inline),
                        (page_size,
                         key_count,
                         trie_index_reserved_size,
+                        avg_key_len,
+                        drop_count,
                         trie_index_begin,
                         trie_index_end,
                         leaf_header_begin,
@@ -390,6 +396,43 @@ BATT_OBJECT_PRINT_IMPL((inline),
 inline void PackedLeafLayoutPlan::check_valid(std::string_view label) const
 {
   BATT_CHECK(this->is_valid()) << *this << BATT_INSPECT_STR(label);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+inline usize PackedLeafLayoutPlan::compute_trie_step_size() const
+{
+  BATT_CHECK_GT(this->key_count, 0);
+  BATT_CHECK_GT(this->avg_key_len, 0);
+
+  // If there are no deleted items in this leaf, return 16.
+  //
+  if (this->drop_count == 0) {
+    return 16;
+  }
+
+  usize trie_buffer_size = this->trie_index_end - this->trie_index_begin;
+  BATT_CHECK_GT(trie_buffer_size, 0);
+
+  // Determine the number of pivot keys to intialize the trie with by using the size of the trie
+  // buffer and the average key length across the items in the leaf.
+  //
+  usize pivot_count = trie_buffer_size / this->avg_key_len;
+  usize step_size = (this->key_count + pivot_count - 1) / pivot_count;
+
+  BATT_CHECK_GT(step_size, 0);
+
+  // If the calculated step size is already a power of 2, return it now.
+  //
+  if ((step_size & (step_size - 1)) == 0) {
+    return step_size;
+  }
+
+  // Otherwise, calculate the nearest power of 2 less than `step_size`.
+  //
+  i32 shift = batt::log2_floor(step_size);
+  BATT_CHECK_GE(shift, 0);
+  return usize{1} << shift;
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -423,6 +466,7 @@ class PackedLeafLayoutPlanBuilder
     plan.page_size = this->page_size;
     plan.key_count = BATT_CHECKED_CAST(u32, this->key_count);
     plan.trie_index_reserved_size = this->trie_index_reserved_size;
+    plan.avg_key_len = plan.key_count > 0 ? this->key_data_size / plan.key_count : 0;
 
     usize offset = 0;
     const auto append = [&offset](usize size) {
@@ -514,19 +558,18 @@ struct AddLeafItemsSummary {
   LeafItemsSummary operator()(const LeafItemsSummary& prior, const EditView& edit) const noexcept
   {
     usize drop_count = prior.drop_count;
-    if (decays_to_item(edit)) {
+    if (!decays_to_item(edit)) {
       drop_count++;
     }
     return LeafItemsSummary{
-      .drop_count = drop_count,
-      .key_count = prior.key_count + 1,
-      .key_data_size = prior.key_data_size + (edit.key.size() + 4),
-      .value_data_size = prior.value_data_size + (1 + edit.value.size()),
+        .drop_count = drop_count,
+        .key_count = prior.key_count + 1,
+        .key_data_size = prior.key_data_size + (edit.key.size() + 4),
+        .value_data_size = prior.value_data_size + (1 + edit.value.size()),
     };
   }
 
-  LeafItemsSummary operator()(const LeafItemsSummary& prior,
-                              const ItemView& edit) const noexcept
+  LeafItemsSummary operator()(const LeafItemsSummary& prior, const ItemView& edit) const noexcept
   {
     return AddLeafItemsSummary{}(BATT_FORWARD(prior), EditView::from_item_view(edit));
   }
@@ -564,6 +607,8 @@ template <typename ItemsRangeT>
   plan_builder.trie_index_reserved_size = trie_index_reserved_size;
 
   PackedLeafLayoutPlan plan = plan_builder.build();
+
+  plan.drop_count = summary.drop_count;
 
   return plan;
 }
@@ -690,7 +735,7 @@ inline PackedLeafPage* build_leaf_page(MutableBuffer buffer,
   if (plan.trie_index_reserved_size > 0) {
     const MutableBuffer trie_buffer{(void*)advance_pointer(buffer.data(), plan.trie_index_begin),
                                     plan.trie_index_end - plan.trie_index_begin};
-    usize step_size = 16;
+    usize step_size = plan.compute_trie_step_size();
     bool retried = false;
     batt::SmallVec<std::string_view, 1024> pivot_keys;
     for (;;) {

@@ -188,25 +188,23 @@ class RandomResultSetGenerator : public MinMaxSize<usize{1} << 24>
       DecayToItem<kDecayToItems>,
       Rng& rng,
       llfs::StableStringStore& store,
-      Optional<std::vector<KeyView>> to_delete = None)
+      const std::vector<KeyView>& to_delete)
   {
     using ResultSet = MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems>;
     using Item = typename ResultSet::value_type;
 
     const usize n = this->Super::pick_size(rng);
     std::vector<EditView> items;
+    
+    for (const KeyView& delete_key : to_delete) {
+      items.emplace_back(delete_key, ValueView::deleted());
+    }
 
     while (items.size() < n) {
       for (usize i = items.size(); i < n; ++i) {
         char ch = '_' + (i & 31);
         items.emplace_back(this->key_generator_(rng, store),
                            ValueView::from_str(store.store(std::string(this->value_size_, ch))));
-      }
-
-      if (to_delete) {
-        for (const KeyView& delete_key : *to_delete) {
-          items.emplace_back(delete_key, ValueView::deleted());
-        }
       }
 
       std::sort(items.begin(), items.end(), KeyOrder{});

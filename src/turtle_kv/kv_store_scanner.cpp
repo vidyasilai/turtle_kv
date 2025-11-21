@@ -438,12 +438,26 @@ Status KVStoreScanner::set_next_item()
       this->next_item_.emplace(scan_level->item());
 
     } else if (this->next_item_->key == scan_level->key) {
+      // If this->next_item_->key == scan_level->key, we need to search for a terminal value for
+      // the item, so combine it if necessary.
+      //
       if (this->next_item_->needs_combine()) {
         this->next_item_->value = combine(this->next_item_->value, scan_level->value());
       }
 
     } else {
+      // If the item stored in this->next_item_ does not have the same key as the first key in
+      // the current scan_level, we have reached a terminal value for this->next_item_. Now,
+      // we have to decide whether we want to keep this->next_item_ and  break from the loop
+      // (returning the item to the function's caller) OR discard it, because the terminal value
+      // represents a deleted item.
+      //
       if (this->next_item_->value == ValueView::deleted()) {
+        // The terminal value represents a deleted item, so discard it by setting this->next_item_
+        // to None. Then, continue on to the next iteration of the loop, skipping the logic to
+        // advance the current scan_level. We do this because we now need to set the first key
+        // in the current scan_level to this->next_item_ to examine it next.
+        //
         this->next_item_ = None;
         continue;
       } else {
@@ -459,7 +473,7 @@ Status KVStoreScanner::set_next_item()
       LatencyTimer timer{batt::Every2ToTheConst<8>{},
                          KVStoreScanner::metrics().heap_remove_latency};
       this->heap_.remove_first();
-      //this->needs_resume_ = true;
+      // this->needs_resume_ = true;
       BATT_REQUIRE_OK(this->resume());
     }
   }
