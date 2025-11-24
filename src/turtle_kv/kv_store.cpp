@@ -653,6 +653,9 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
   if (value) {
     if (!value->needs_combine()) {
       this->metrics_.mem_table_get_count.add(1);
+      if (value->is_delete()) {
+        return {batt::StatusCode::kNotFound};
+      }
       // VLOG(1) << "found key " << batt::c_str_literal(key) << " in active MemTable";
       return *value;
     }
@@ -677,11 +680,17 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
         *value = combine(*value, *delta_value);
         if (!value->needs_combine()) {
           this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)].add(1);
+          if (value->is_delete()) {
+            return {batt::StatusCode::kNotFound};
+          }
           return *value;
         }
       } else {
         if (!delta_value->needs_combine()) {
           this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)].add(1);
+          if (delta_value->is_delete()) {
+            return {batt::StatusCode::kNotFound};
+          }
           return *delta_value;
         }
         value = delta_value;

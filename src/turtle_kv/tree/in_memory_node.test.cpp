@@ -134,6 +134,16 @@ void verify_table_point_queries(Table& expected_table, Table& actual_table, Rng&
   }
 }
 
+void verify_deleted_point_queries(Table& expected_table,
+                                  Table& actual_table,
+                                  const std::vector<KeyView>& deleted_keys)
+{
+  for (const KeyView& key : deleted_keys) {
+    EXPECT_EQ(expected_table.get(key).status(), batt::StatusCode::kNotFound);
+    EXPECT_EQ(actual_table.get(key).status(), batt::StatusCode::kNotFound);
+  }
+}
+
 void verify_range_scan(LatencyMetric* scan_latency,
                        Table& expected_table,
                        const Slice<std::pair<KeyView, ValueView>>& actual_read_items,
@@ -427,6 +437,10 @@ void SubtreeBatchUpdateScenario::run()
         verify_table_point_queries(expected_table, actual_table, rng, batt::log2_ceil(i)))
         << BATT_INSPECT(this->seed) << BATT_INSPECT(i);
 
+    ASSERT_NO_FATAL_FAILURE(
+          verify_deleted_point_queries(expected_table, actual_table, pending_deletes))
+          << BATT_INSPECT(this->seed) << BATT_INSPECT(i);
+
     if (((i + 1) % chi) == 0) {
       if (my_id == 0) {
         LOG(INFO) << "taking checkpoint...";
@@ -454,6 +468,10 @@ void SubtreeBatchUpdateScenario::run()
 
       ASSERT_NO_FATAL_FAILURE(
           verify_table_point_queries(expected_table, actual_table, rng, batt::log2_ceil(i)))
+          << BATT_INSPECT(this->seed) << BATT_INSPECT(i);
+
+      ASSERT_NO_FATAL_FAILURE(
+          verify_deleted_point_queries(expected_table, actual_table, pending_deletes))
           << BATT_INSPECT(this->seed) << BATT_INSPECT(i);
 
       {
@@ -663,8 +681,8 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
         ASSERT_TRUE(commit_status.ok()) << BATT_INSPECT(commit_status);
 
         ASSERT_NO_FATAL_FAILURE(
-          verify_table_point_queries(expected_table, actual_table, rng, batt::log2_ceil(i)))
-          << BATT_INSPECT(i);
+            verify_table_point_queries(expected_table, actual_table, rng, batt::log2_ceil(i)))
+            << BATT_INSPECT(i);
 
         if (perform_scan) {
           auto root_ptr = std::make_shared<Subtree>(tree.clone_serialized_or_panic());
@@ -702,7 +720,7 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
                                                     as_slice(scan_items_buffer.data(), n_read),
                                                     min_key,
                                                     scan_len))
-              << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len); 
+              << BATT_INSPECT(i) << BATT_INSPECT_STR(min_key) << BATT_INSPECT(scan_len);
         }
 
         page_loader.emplace(*page_cache);

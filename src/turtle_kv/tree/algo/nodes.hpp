@@ -179,7 +179,7 @@ struct NodeAlgorithms {
 
     BATT_REQUIRE_OK(combine_in_place(&value, subtree_result));
 
-    if (!value) {
+    if (!value || value->is_delete()) {
       return {batt::StatusCode::kNotFound};
     }
 
