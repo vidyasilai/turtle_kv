@@ -459,6 +459,9 @@ Status KVStoreScanner::set_next_item()
         // in the current scan_level to this->next_item_ to examine it next.
         //
         this->next_item_ = None;
+        if (this->needs_resume_) {
+          BATT_REQUIRE_OK(this->resume());
+        }
         continue;
       } else {
         break;
@@ -473,8 +476,7 @@ Status KVStoreScanner::set_next_item()
       LatencyTimer timer{batt::Every2ToTheConst<8>{},
                          KVStoreScanner::metrics().heap_remove_latency};
       this->heap_.remove_first();
-      // this->needs_resume_ = true;
-      BATT_REQUIRE_OK(this->resume());
+      this->needs_resume_ = true;
     }
   }
 

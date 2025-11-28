@@ -5,6 +5,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <turtle_kv/core/testing/generate.hpp>
 #include <turtle_kv/import/env.hpp>
 
 #include <batteries/stream_util.hpp>
@@ -23,6 +24,8 @@ using namespace batt::int_types;
 using batt::as_seq;
 using batt::WorkerPool;
 
+using llfs::StableStringStore;
+
 using turtle_kv::CInterval;
 using turtle_kv::EditSlice;
 using turtle_kv::EditView;
@@ -38,6 +41,8 @@ using turtle_kv::Slice;
 using turtle_kv::Status;
 using turtle_kv::StatusOr;
 using turtle_kv::ValueView;
+
+using turtle_kv::testing::RandomStringGenerator;
 
 namespace seq = turtle_kv::seq;
 
@@ -479,6 +484,52 @@ TEST(MergeCompactor, ResultSetDropKeyRange)
     }
 
     // end - for all seeds
+  }
+}
+
+TEST(MergeCompactor, ResultSetConcat)
+{
+  usize n = 200;
+  std::vector<EditView> all_edits;
+  std::unordered_set<KeyView> keys_set;
+  llfs::StableStringStore store;
+
+  std::string value_str = std::string(100, 'a');
+  ValueView value = ValueView::from_str(value_str);
+
+  std::default_random_engine rng{/*seed=*/30};
+  RandomStringGenerator generate_key;
+  while (all_edits.size() < n) {
+    KeyView key = generate_key(rng, store);
+    if (keys_set.contains(key)) {
+      continue;
+    }
+    keys_set.emplace(key);
+    all_edits.emplace_back(key, value);
+  }
+  std::sort(all_edits.begin(), all_edits.end(), KeyOrder{});
+
+  std::vector<EditView> first{all_edits.begin(), all_edits.begin() + (n / 2)};
+  std::vector<EditView> second{all_edits.begin() + (n / 2), all_edits.end()};
+
+  MergeCompactor::ResultSet<false> first_result_set;
+  first_result_set.append(std::move(first));
+  MergeCompactor::ResultSet<false> second_result_set;
+  second_result_set.append(std::move(second));
+
+  EXPECT_EQ(first_result_set.size(), n / 2);
+  EXPECT_EQ(second_result_set.size(), n / 2);
+
+  MergeCompactor::ResultSet<false> concatenated_result_set =
+      MergeCompactor::ResultSet<false>::concat(std::move(first_result_set),
+                                               std::move(second_result_set));
+
+  EXPECT_EQ(concatenated_result_set.size(), n);
+
+  usize i = 0;
+  for (const EditView& edit : concatenated_result_set.get()) {
+    EXPECT_EQ(edit, all_edits[i]);
+    ++i;
   }
 }
 

@@ -544,7 +544,7 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
   usize items_per_leaf = tree_options.flush_size() / tree_options.expected_item_size();
   usize total_batches = 81;
 
-  std::vector<std::string> keys;
+  std::vector<KeyView> keys;
   keys.reserve(total_batches * items_per_leaf);
 
   std::string value_str = std::string(value_size, 'a');
@@ -552,17 +552,17 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
 
   std::default_random_engine rng{/*seed=*/3};
   RandomStringGenerator generate_key;
-  for (usize i = 0; i < total_batches * items_per_leaf; ++i) {
-    keys.emplace_back(generate_key(rng));
+  llfs::StableStringStore store;
+  std::unordered_set<KeyView> keys_set;
+  while (keys.size() < total_batches * items_per_leaf) {
+    KeyView key = generate_key(rng, store);
+    if (keys_set.contains(key)) {
+      continue;
+    }
+    keys_set.emplace(key);
+    keys.emplace_back(key);
   }
   std::sort(keys.begin(), keys.end(), llfs::KeyOrder{});
-  keys.erase(std::unique(keys.begin(),
-                         keys.end(),
-                         [](const auto& l, const auto& r) {
-                           return get_key(l) == get_key(r);
-                         }),
-             keys.end());
-  BATT_CHECK_EQ(keys.size(), total_batches * items_per_leaf);
 
   std::shared_ptr<llfs::PageCache> page_cache =
       make_memory_page_cache(batt::Runtime::instance().default_scheduler(),

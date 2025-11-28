@@ -650,14 +650,19 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
                                        this->metrics_.mem_table_get_latency,
                                        observed_state->mem_table_->get(key));
 
+  const auto return_memtable_value =
+      [](Optional<ValueView> mem_table_value,
+         FastCountMetric<u64>& get_count_metric) -> StatusOr<ValueView> {
+    get_count_metric.add(1);
+    if (mem_table_value->is_delete()) {
+      return {batt::StatusCode::kNotFound};
+    }
+    return *mem_table_value;
+  };
+
   if (value) {
     if (!value->needs_combine()) {
-      this->metrics_.mem_table_get_count.add(1);
-      if (value->is_delete()) {
-        return {batt::StatusCode::kNotFound};
-      }
-      // VLOG(1) << "found key " << batt::c_str_literal(key) << " in active MemTable";
-      return *value;
+      return return_memtable_value(value, this->metrics_.mem_table_get_count);
     }
   }
 
@@ -679,19 +684,15 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
       if (value) {
         *value = combine(*value, *delta_value);
         if (!value->needs_combine()) {
-          this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)].add(1);
-          if (value->is_delete()) {
-            return {batt::StatusCode::kNotFound};
-          }
-          return *value;
+          return return_memtable_value(
+              value,
+              this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)]);
         }
       } else {
         if (!delta_value->needs_combine()) {
-          this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)].add(1);
-          if (delta_value->is_delete()) {
-            return {batt::StatusCode::kNotFound};
-          }
-          return *delta_value;
+          return return_memtable_value(
+              delta_value,
+              this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)]);
         }
         value = delta_value;
       }

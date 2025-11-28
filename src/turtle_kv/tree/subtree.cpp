@@ -139,13 +139,10 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
           auto new_leaf = std::make_unique<InMemoryLeaf>(llfs::PinnedPage{}, tree_options);
 
-          update.decay_batch_to_items(new_leaf->result_set);
+          new_leaf->result_set = std::move(update.context.decay_batch_to_items(update.result_set));
 
-          if (!update.edit_size_totals) {
-            update.update_edit_size_totals_decayed(new_leaf->result_set);
-          }
-
-          new_leaf->set_edit_size_totals(std::move(*update.edit_size_totals));
+          new_leaf->set_edit_size_totals(
+              update.context.compute_running_total(new_leaf->result_set));
           update.edit_size_totals = None;
 
           return Subtree{std::move(new_leaf)};
