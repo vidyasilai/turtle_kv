@@ -951,10 +951,10 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateConte
                     //
                     BATT_ASSIGN_OK_RESULT(
                         MergedLevel new_merged_level,
-                        UpdateBuffer::merge_segmented_and_merged_level(context,
-                                                                       left_merged_level,
-                                                                       right_segmented_level,
-                                                                       right));
+                        UpdateBuffer::concat_segmented_and_merged_level(context,
+                                                                        left_merged_level,
+                                                                        right_segmented_level,
+                                                                        right));
 
                     new_node->update_buffer.levels.emplace_back(std::move(new_merged_level));
 
@@ -977,10 +977,10 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_merge(BatchUpdateConte
                   [&](MergedLevel& right_merged_level) -> Status {
                     BATT_ASSIGN_OK_RESULT(
                         MergedLevel new_merged_level,
-                        UpdateBuffer::merge_segmented_and_merged_level(context,
-                                                                       right_merged_level,
-                                                                       left_segmented_level,
-                                                                       left));
+                        UpdateBuffer::concat_segmented_and_merged_level(context,
+                                                                        right_merged_level,
+                                                                        left_segmented_level,
+                                                                        left));
 
                     new_node->update_buffer.levels.emplace_back(std::move(new_merged_level));
 
@@ -2136,7 +2136,7 @@ void InMemoryNode::UpdateBuffer::SegmentedLevel::check_items_sorted(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ StatusOr<MergedLevel> InMemoryNode::UpdateBuffer::merge_segmented_and_merged_level(
+/*static*/ StatusOr<MergedLevel> InMemoryNode::UpdateBuffer::concat_segmented_and_merged_level(
     BatchUpdateContext& context,
     MergedLevel& merged_level,
     SegmentedLevel& segmented_level,

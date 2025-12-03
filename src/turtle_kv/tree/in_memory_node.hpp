@@ -349,7 +349,7 @@ struct InMemoryNode {
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-    static StatusOr<MergedLevel> merge_segmented_and_merged_level(
+    static StatusOr<MergedLevel> concat_segmented_and_merged_level(
         BatchUpdateContext& context,  //
         MergedLevel& merged_level,
         SegmentedLevel& segmented_level,

@@ -9,8 +9,7 @@ using TrimResult = BatchUpdate::TrimResult;
 //
 void BatchUpdate::update_edit_size_totals()
 {
-  this->edit_size_totals.emplace(
-      this->context.compute_running_total</*decay_to_items=*/false>(this->result_set));
+  this->edit_size_totals.emplace(this->context.compute_running_total(this->result_set));
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
