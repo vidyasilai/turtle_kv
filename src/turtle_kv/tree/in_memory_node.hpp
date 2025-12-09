@@ -357,7 +357,7 @@ struct InMemoryNode {
 
     SmallFn<void(std::ostream&)> dump() const;
 
-    u64 compute_active_segmented_levels() const;
+    u64 compute_active_pivots() const;
 
     usize count_non_empty_levels() const
     {
@@ -546,16 +546,19 @@ struct InMemoryNode {
    */
   Status try_flush(BatchUpdateContext& context);
 
-  /** \brief Merge the node with one of its siblings and return the newly merged node.
+  /** \brief Merge the node in place with its right sibling.
+   * 
+   * Returns nullptr if `sibling` is completely consumed; otherwise, returns the modified sibling
+   * since a borrow occurred.
    */
   StatusOr<std::unique_ptr<InMemoryNode>> try_merge(BatchUpdateContext& context,
-                                                    InMemoryNode& sibling) noexcept;
+                                                    std::unique_ptr<InMemoryNode> sibling) noexcept;
 
-  /** \brief Attempts to make the node (that needs a merge) viable by borrowing data
-   * from one of its siblings. If successful, returns the new pivot key to be set in the parent
-   * of these two nodes to separate them.
+  /** \brief Attempts to make `this` (which needs a merge) viable by borrowing data
+   * from one of its siblings. Note that for this function, `sibling` does not have to be the right
+   * sibling. Both `this` and `sibling` are modified in place.
    */
-  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, InMemoryNode& sibling) noexcept;
+  Status try_borrow(BatchUpdateContext& context, InMemoryNode& sibling) noexcept;
 
   /** \brief Splits the specified child, inserting a new pivot immediately after `pivot_i`.
    */

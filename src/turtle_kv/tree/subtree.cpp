@@ -585,7 +585,7 @@ StatusOr<Optional<Subtree>> Subtree::try_split(BatchUpdateContext& context)
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context,
-                                               Subtree& sibling) noexcept
+                                               Subtree&& sibling) noexcept
 {
   BATT_CHECK(!this->locked_.load());
 
@@ -598,7 +598,7 @@ StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context,
         return {batt::StatusCode::kUnimplemented};
       },
 
-      [&](const std::unique_ptr<InMemoryLeaf>& leaf) -> StatusOr<Optional<Subtree>> {
+      [&](std::unique_ptr<InMemoryLeaf>& leaf) -> StatusOr<Optional<Subtree>> {
         BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryLeaf>>(sibling.impl_));
         auto& sibling_leaf_ptr = std::get<std::unique_ptr<InMemoryLeaf>>(sibling.impl_);
         BATT_CHECK(sibling_leaf_ptr);
@@ -606,48 +606,24 @@ StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context,
         BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryLeaf> merged_leaf,  //
                               leaf->try_merge(context, std::move(sibling_leaf_ptr)));
 
-        return {Subtree{std::move(merged_leaf)}};
+        BATT_CHECK_EQ(merged_leaf, nullptr);
+
+        return Optional<Subtree>{None};
       },
 
-      [&](const std::unique_ptr<InMemoryNode>& node) -> StatusOr<Optional<Subtree>> {
+      [&](std::unique_ptr<InMemoryNode>& node) -> StatusOr<Optional<Subtree>> {
         BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryNode>>(sibling.impl_));
         auto& sibling_node_ptr = std::get<std::unique_ptr<InMemoryNode>>(sibling.impl_);
         BATT_CHECK(sibling_node_ptr);
 
         BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryNode> merged_node,  //
-                              node->try_merge(context, *sibling_node_ptr));
+                              node->try_merge(context, std::move(sibling_node_ptr)));
 
         if (merged_node == nullptr) {
           return Optional<Subtree>{None};
         }
 
         return {Subtree{std::move(merged_node)}};
-      });
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-StatusOr<KeyView> Subtree::try_borrow(BatchUpdateContext& context, Subtree& sibling) noexcept
-{
-  BATT_CHECK(!this->locked_.load());
-
-  return batt::case_of(
-      this->impl_,
-
-      [&](const llfs::PageIdSlot& page_id_slot [[maybe_unused]]) -> StatusOr<KeyView> {
-        return {batt::StatusCode::kUnimplemented};
-      },
-
-      [&](const std::unique_ptr<InMemoryLeaf>& leaf [[maybe_unused]]) -> StatusOr<KeyView> {
-        return {batt::StatusCode::kUnimplemented};
-      },
-
-      [&](const std::unique_ptr<InMemoryNode>& node) -> StatusOr<KeyView> {
-        BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryNode>>(sibling.impl_));
-        auto& sibling_node_ptr = std::get<std::unique_ptr<InMemoryNode>>(sibling.impl_);
-        BATT_CHECK(sibling_node_ptr);
-
-        return node->try_borrow(context, *sibling_node_ptr);
       });
 }
 

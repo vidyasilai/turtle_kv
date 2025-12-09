@@ -138,18 +138,13 @@ class Subtree
    */
   StatusOr<Optional<Subtree>> try_split(BatchUpdateContext& context);
 
-  /** \brief Attempts to merge the given Subtree with one of its siblings. If successful, the
-   * newly merged Subtree is returned.
-   *
-   * If no merge, returns None.
+  /** \brief Attempts to merge the given Subtree in place with its right sibling.
+   * 
+   * If the in place merge is successful, `sibling` is completely consumed and `None` is returned.
+   * 
+   * If a borrow needs to occur, `this` is modified in place and the modified sibling is returned.
    */
-  StatusOr<Optional<Subtree>> try_merge(BatchUpdateContext& context, Subtree& sibling) noexcept;
-
-  /** \brief Attempts to make the Subtree viable by borrowing data from one of its siblings.
-   * Called when the Subtree needs a merge, but borrowing is the only option to make the tree
-   * viable.
-   */
-  StatusOr<KeyView> try_borrow(BatchUpdateContext& context, Subtree& sibling) noexcept;
+  StatusOr<Optional<Subtree>> try_merge(BatchUpdateContext& context, Subtree&& sibling) noexcept;
 
   /** \brief Attempt to make the root viable by flushing a batch.
    */

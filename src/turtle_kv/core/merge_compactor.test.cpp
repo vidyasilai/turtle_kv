@@ -27,6 +27,7 @@ using batt::WorkerPool;
 using llfs::StableStringStore;
 
 using turtle_kv::CInterval;
+using turtle_kv::DecayToItem;
 using turtle_kv::EditSlice;
 using turtle_kv::EditView;
 using turtle_kv::getenv_as;
@@ -487,50 +488,176 @@ TEST(MergeCompactor, ResultSetDropKeyRange)
   }
 }
 
-TEST(MergeCompactor, ResultSetConcat)
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+class ResultSetConcatTest : public ::testing::Test
+{
+ public:
+  void generate_edits(usize num_edits, bool needs_sort = true)
+  {
+    std::unordered_set<KeyView> keys_set;
+
+    std::default_random_engine rng{/*seed=*/30};
+    RandomStringGenerator generate_key;
+    while (this->all_edits_.size() < num_edits) {
+      KeyView key = generate_key(rng, this->store_);
+      if (keys_set.contains(key)) {
+        continue;
+      }
+      keys_set.emplace(key);
+      this->all_edits_.emplace_back(key,
+                                    ValueView::from_str(this->store_.store(std::string(100, 'a'))));
+    }
+
+    if (needs_sort) {
+      std::sort(this->all_edits_.begin(), this->all_edits_.end(), KeyOrder{});
+    } else {
+      if (std::is_sorted(this->all_edits_.begin(), this->all_edits_.end(), KeyOrder{})) {
+        std::swap(this->all_edits_.front(), this->all_edits_.back());
+      }
+    }
+  }
+
+  template <bool kDecayToItems>
+  MergeCompactor::ResultSet<kDecayToItems> concat(std::vector<EditView>&& first,
+                                                  std::vector<EditView>&& second,
+                                                  DecayToItem<kDecayToItems> decay_to_item)
+  {
+    usize first_size = first.size();
+    usize second_size = second.size();
+
+    MergeCompactor::ResultSet<kDecayToItems> first_result_set;
+    first_result_set.append(std::move(first));
+    MergeCompactor::ResultSet<kDecayToItems> second_result_set;
+    second_result_set.append(std::move(second));
+
+    EXPECT_EQ(first_result_set.size(), first_size);
+    EXPECT_EQ(second_result_set.size(), second_size);
+
+    MergeCompactor::ResultSet<kDecayToItems> concatenated_result_set =
+        MergeCompactor::ResultSet<kDecayToItems>::concat(std::move(first_result_set),
+                                                         std::move(second_result_set));
+
+    return concatenated_result_set;
+  }
+
+  template <bool kDecayToItems>
+  void verify_result_set(const MergeCompactor::ResultSet<kDecayToItems>& result_set,
+                         const std::vector<EditView>& edits)
+  {
+    EXPECT_EQ(result_set.size(), edits.size());
+
+    usize i = 0;
+    for (const EditView& edit : result_set.get()) {
+      EXPECT_EQ(edit, edits[i]);
+      ++i;
+    }
+  }
+
+  llfs::StableStringStore store_;
+  std::vector<EditView> all_edits_;
+};
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+TEST_F(ResultSetConcatTest, Concat)
+{
+  // Generate an edit batch of size 200.
+  //
+  usize n = 200;
+  this->generate_edits(n);
+
+  // Divide the edit batch in half, and create ResultSet objects out of each half.
+  //
+  std::vector<EditView> first{this->all_edits_.begin(), this->all_edits_.begin() + (n / 2)};
+  std::vector<EditView> second{this->all_edits_.begin() + (n / 2), this->all_edits_.end()};
+
+  MergeCompactor::ResultSet<false> concatenated_result_set =
+      this->concat(std::move(first), std::move(second), DecayToItem<false>{});
+
+  // Concatenated ResultSet should have the same size as the original edit batch, and should
+  // also contain the same items in the same order.
+  //
+  this->verify_result_set(concatenated_result_set, this->all_edits_);
+
+  // Now, repeat the process qith unequal sized inputs
+  //
+  first.assign(this->all_edits_.begin(), this->all_edits_.begin() + (n / 4));
+  second.assign(this->all_edits_.begin() + (n / 4), this->all_edits_.end());
+
+  concatenated_result_set = this->concat(std::move(first), std::move(second), DecayToItem<false>{});
+
+  this->verify_result_set(concatenated_result_set, this->all_edits_);
+
+  // Finally, test with empty input.
+  //
+  first = {};
+  second.assign(this->all_edits_.begin(), this->all_edits_.begin() + (n / 4));
+
+  concatenated_result_set = this->concat(std::move(first), std::move(second), DecayToItem<false>{});
+
+  this->verify_result_set(concatenated_result_set,
+                          {this->all_edits_.begin(), this->all_edits_.begin() + (n / 4)});
+
+  first = {};
+  second = {};
+  concatenated_result_set = this->concat(std::move(first), std::move(second), DecayToItem<false>{});
+  EXPECT_EQ(concatenated_result_set.size(), 0);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+TEST_F(ResultSetConcatTest, FragmentedConcat)
 {
   usize n = 200;
-  std::vector<EditView> all_edits;
-  std::unordered_set<KeyView> keys_set;
-  llfs::StableStringStore store;
+  this->generate_edits(n);
 
-  std::string value_str = std::string(100, 'a');
-  ValueView value = ValueView::from_str(value_str);
-
-  std::default_random_engine rng{/*seed=*/30};
-  RandomStringGenerator generate_key;
-  while (all_edits.size() < n) {
-    KeyView key = generate_key(rng, store);
-    if (keys_set.contains(key)) {
-      continue;
-    }
-    keys_set.emplace(key);
-    all_edits.emplace_back(key, value);
-  }
-  std::sort(all_edits.begin(), all_edits.end(), KeyOrder{});
-
-  std::vector<EditView> first{all_edits.begin(), all_edits.begin() + (n / 2)};
-  std::vector<EditView> second{all_edits.begin() + (n / 2), all_edits.end()};
+  std::vector<EditView> first{this->all_edits_.begin(), this->all_edits_.begin() + (n / 2)};
+  std::vector<EditView> second{this->all_edits_.begin() + (n / 2), this->all_edits_.end()};
 
   MergeCompactor::ResultSet<false> first_result_set;
   first_result_set.append(std::move(first));
   MergeCompactor::ResultSet<false> second_result_set;
   second_result_set.append(std::move(second));
 
-  EXPECT_EQ(first_result_set.size(), n / 2);
-  EXPECT_EQ(second_result_set.size(), n / 2);
+  // Drop some keys fron the beginning of the ResultSet.
+  //
+  first_result_set.drop_before_n(n / 10);
+
+  // Drop some keys in the middle of the ResultSet.
+  //
+  auto second_range_begin = this->all_edits_.begin() + (3 * n / 5);
+  auto second_range_end = this->all_edits_.begin() + (3 * n / 4);
+  Interval<KeyView> second_range{second_range_begin->key, second_range_end->key};
+  second_result_set.drop_key_range_half_open(second_range);
 
   MergeCompactor::ResultSet<false> concatenated_result_set =
       MergeCompactor::ResultSet<false>::concat(std::move(first_result_set),
                                                std::move(second_result_set));
 
-  EXPECT_EQ(concatenated_result_set.size(), n);
+  std::vector<EditView> concat_edits{this->all_edits_.begin() + (n / 10),
+                                     this->all_edits_.begin() + (3 * n / 5)};
+  concat_edits.insert(concat_edits.end(),
+                      this->all_edits_.begin() + (3 * n / 4),
+                      this->all_edits_.end());
+  this->verify_result_set(concatenated_result_set, concat_edits);
+}
 
-  usize i = 0;
-  for (const EditView& edit : concatenated_result_set.get()) {
-    EXPECT_EQ(edit, all_edits[i]);
-    ++i;
-  }
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+TEST_F(ResultSetConcatTest, ConcatDeath)
+{
+  usize n = 200;
+  this->generate_edits(n, /*needs_sort*/ false);
+
+  std::vector<EditView> first{this->all_edits_.begin(), this->all_edits_.begin() + (n / 2)};
+  std::vector<EditView> second{this->all_edits_.begin() + (n / 2), this->all_edits_.end()};
+
+  // We should panic since first and second have overlapping key ranges.
+  //
+  EXPECT_DEATH(this->concat(std::move(first), std::move(second), DecayToItem<false>{}),
+               "All elements in the first ResultSet should be strictly less than the elements in "
+               "the second ResultSet!");
 }
 
 }  // namespace

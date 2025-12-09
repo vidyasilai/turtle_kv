@@ -200,11 +200,6 @@ class RandomResultSetGenerator : public MinMaxSize<usize{1} << 24>
     for (const KeyView& delete_key : to_delete) {
       items.emplace_back(delete_key, ValueView::deleted());
     }
-    if (items.size() > n) {
-      ResultSet result;
-      result.append(std::move(items));
-      return result;
-    }
 
     std::unordered_set<KeyView> deleted_items_set{to_delete.begin(), to_delete.end()};
     while (items.size() < n) {

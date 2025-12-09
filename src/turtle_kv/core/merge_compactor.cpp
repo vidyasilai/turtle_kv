@@ -429,6 +429,12 @@ template <bool kDecayToItems>
 /*static*/ auto MergeCompactor::ResultSet<kDecayToItems>::concat(ResultSet&& first,
                                                                  ResultSet&& second) -> ResultSet
 {
+  if (first.size() > 0 && second.size() > 0) {
+    BATT_CHECK_LT(first.get_max_key(), second.get_min_key())
+        << "All elements in the first ResultSet should be strictly less than the elements in the "
+           "second ResultSet!";
+  }
+
   ResultSet ans;
 
   //----- --- -- -  -  -   -

@@ -662,8 +662,6 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
           << BATT_INSPECT(i);
 
       if (((i + 1) % chi) == 0) {
-        LOG(INFO) << "Taking checkpoint...";
-
         std::unique_ptr<llfs::PageCacheJob> page_job = page_cache->new_job();
         TreeSerializeContext context{tree_options, *page_job, worker_pool};
 
