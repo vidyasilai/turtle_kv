@@ -11,7 +11,7 @@ have an implementation of this interface which simultaneously
 optimizes for updates, queries, and memory usage.  However, theory has
 proven
 ([1](https://perso.ens-lyon.fr/loris.marchal/docs-data-aware/papers/paper3.pdf))
-and practice as shown
+and practice has shown
 ([2](https://stratos.seas.harvard.edu/sites/g/files/omnuum4611/files/stratos/files/rum.pdf))
 that this is impossible.  Current state-of-the-art key-value engines,
 when they offer tuning parameters to dial in the right balance for a

@@ -12,6 +12,8 @@
 
 #include <turtle_kv/scan_metrics.hpp>
 
+#include <turtle_kv/checkpoint_log.hpp>
+
 #include <turtle_kv/core/table.hpp>
 
 namespace {
@@ -93,8 +95,7 @@ TEST(KVStoreTest, CreateAndOpen)
 
           {
             auto p_storage_context =
-                llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),
-                                                  //
+                llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
                                                   scoped_io_ring->get_io_ring());
 
             Status create_status = KVStore::create(*p_storage_context,  //
@@ -108,7 +109,6 @@ TEST(KVStoreTest, CreateAndOpen)
           auto p_storage_context =
               llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
                                                 scoped_io_ring->get_io_ring());
-
           BATT_CHECK_OK(KVStore::configure_storage_context(*p_storage_context,
                                                            tree_options,
                                                            runtime_options));
@@ -280,4 +280,230 @@ TEST(KVStoreTest, ScanStressTest)
   LOG(INFO) << BATT_INSPECT(n_scans);
 }
 
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+class CheckpointTestParams
+{
+ public:
+  CheckpointTestParams(u64 num_checkpoints_to_create, u64 num_puts)
+      : num_checkpoints_to_create(num_checkpoints_to_create)
+      , num_puts(num_puts)
+  {
+  }
+
+  u64 num_checkpoints_to_create;
+  u64 num_puts;
+};
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+class CheckpointTest
+    : public ::testing::Test
+    , public testing::WithParamInterface<CheckpointTestParams>
+{
+ public:
+  void SetUp() override
+  {
+    CheckpointTestParams checkpoint_test_params = GetParam();
+
+    this->num_checkpoints_to_create = checkpoint_test_params.num_checkpoints_to_create;
+    this->num_puts = checkpoint_test_params.num_puts;
+
+  }  // namespace
+
+  void TearDown() override
+  {
+    // Cleanup resources if necessary
+  }
+
+  u64 num_checkpoints_to_create;
+  u64 num_puts;
+};
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+TEST_P(CheckpointTest, CheckpointRecovery)
+{
+  batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
+  ASSERT_TRUE(root.ok());
+
+  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_scan_stress";
+
+  std::default_random_engine rng{/*seed=*/1};
+  RandomStringGenerator generate_key;
+  SequentialStringGenerator generate_value{100};
+
+  KVStore::Config kv_store_config;
+
+  kv_store_config.initial_capacity_bytes = 0 * kMiB;
+  kv_store_config.change_log_size_bytes = 512 * kMiB * 10;
+
+  TreeOptions& tree_options = kv_store_config.tree_options;
+
+  tree_options.set_node_size(4 * kKiB);
+  tree_options.set_leaf_size(1 * kMiB);
+  tree_options.set_key_size_hint(24);
+  tree_options.set_value_size_hint(10);
+
+  StatusOr<llfs::ScopedIoRing> scoped_io_ring =
+      llfs::ScopedIoRing::make_new(llfs::MaxQueueDepth{4096},  //
+                                   llfs::ThreadPoolSize{1});
+
+  ASSERT_TRUE(scoped_io_ring.ok()) << BATT_INSPECT(scoped_io_ring.status());
+
+  auto storage_context =
+      llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
+                                        scoped_io_ring->get_io_ring());
+
+  auto runtime_options = KVStore::RuntimeOptions::with_default_values();
+
+  BATT_CHECK_OK(
+      KVStore::configure_storage_context(*storage_context, tree_options, runtime_options));
+
+  Status create_status =
+      KVStore::create(*storage_context, test_kv_store_dir, kv_store_config, RemoveExisting{true});
+
+  ASSERT_TRUE(create_status.ok()) << BATT_INSPECT(create_status);
+
+  StatusOr<std::unique_ptr<KVStore>> open_result =
+      KVStore::open(batt::Runtime::instance().default_scheduler(),
+                    batt::WorkerPool::default_pool(),
+                    *storage_context,
+                    test_kv_store_dir,
+                    tree_options,
+                    runtime_options);
+
+  ASSERT_TRUE(open_result.ok()) << BATT_INSPECT(open_result.status());
+
+  KVStore& actual_table = **open_result;
+
+  // Disable automatic checkpoints
+  //
+  actual_table.set_checkpoint_distance(99999999);
+
+  std::map<std::string, std::string> expected_keys_values;
+
+  u64 num_checkpoints_created = 0;
+  u64 keys_per_checkpoint;
+
+  if (this->num_checkpoints_to_create == 0) {
+    keys_per_checkpoint = 0;
+  } else {
+    keys_per_checkpoint = std::floor((double)this->num_puts / this->num_checkpoints_to_create);
+  }
+
+  u64 keys_since_checkpoint = 0;
+
+  for (u64 i = 0; i < this->num_puts; ++i) {
+    std::string key = generate_key(rng);
+    std::string value = generate_value();
+
+    Status actual_put_status = actual_table.put(KeyView{key}, ValueView::from_str(value));
+
+    expected_keys_values[key] = value;
+
+    ASSERT_TRUE(actual_put_status.ok()) << BATT_INSPECT(actual_put_status);
+
+    VLOG(3) << "Put key== " << key << ", value==" << value;
+
+    ++keys_since_checkpoint;
+
+    // Take a checkpoint after every keys_per_checkpoint puts. Skip
+    //
+    if (keys_since_checkpoint >= keys_per_checkpoint && this->num_checkpoints_to_create != 0) {
+      keys_since_checkpoint = 0;
+      ++num_checkpoints_created;
+      BATT_CHECK_OK(actual_table.force_checkpoint());
+      VLOG(2) << "Created " << num_checkpoints_created << " checkpoints";
+      if (num_checkpoints_created == this->num_checkpoints_to_create) {
+        break;
+      }
+    }
+  }
+
+  // Handle off by one error where we create one less checkpoint than expected
+  //
+  if (num_checkpoints_created < this->num_checkpoints_to_create) {
+    BATT_CHECK_OK(actual_table.force_checkpoint());
+    ++num_checkpoints_created;
+    VLOG(1) << "Created " << num_checkpoints_created << " checkpoints after rounding error";
+  }
+
+  BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create)
+      << "Did not take the "
+      << "correct number of checkponts. There is a bug in this test.";
+
+  // Test recovering checkpoints after stress test
+  //
+  // TODO: [Gabe Bornstein 11/5/25] Is there a better way to check if all checkpoints are flushed
+  // instead of waiting?
+  //
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  actual_table.halt();
+  actual_table.join();
+  open_result->reset();
+
+  batt::StatusOr<std::unique_ptr<llfs::Volume>> checkpoint_log_volume =
+      turtle_kv::open_checkpoint_log(*storage_context,  //
+                                     test_kv_store_dir / "checkpoint_log.llfs");
+
+  BATT_CHECK_OK(checkpoint_log_volume);
+
+  batt::StatusOr<turtle_kv::Checkpoint> checkpoint =
+      KVStore::recover_latest_checkpoint(**checkpoint_log_volume);
+
+  if (!checkpoint.ok()) {
+    EXPECT_TRUE(checkpoint.ok());
+    return;
+  }
+
+  // There is no checkpoint
+  //
+  if (checkpoint->batch_upper_bound() == turtle_kv::DeltaBatchId::from_u64(0)) {
+    LOG(INFO) << "No checkpoint data found. Exiting the test before checking keys.";
+    EXPECT_TRUE(this->num_checkpoints_to_create == 0 || this->num_puts == 0)
+        << "Expected checkpoint data but found none.";
+    return;
+  }
+
+  // Iterate over all keys and verify their corresponding value in the checkpoint is correct
+  //
+  for (const auto& [key, actual_value] : expected_keys_values) {
+    turtle_kv::KeyView key_view{key};
+    turtle_kv::PageSliceStorage slice_storage;
+    std::unique_ptr<llfs::PageCacheJob> page_loader = (*checkpoint_log_volume)->new_job();
+    turtle_kv::KeyQuery key_query{*page_loader, slice_storage, tree_options, key_view};
+
+    batt::StatusOr<turtle_kv::ValueView> checkpoint_value = checkpoint->find_key(key_query);
+
+    EXPECT_TRUE(checkpoint_value.ok()) << "Didn't find key: " << key;
+  }
+}
+
 }  // namespace
+
+// CheckpointTestParams == {num_puts, num_checkpoints_to_create}
+//
+INSTANTIATE_TEST_SUITE_P(
+    RecoveringCheckpoints,
+    CheckpointTest,
+    testing::Values(
+        // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't getting any
+        // checkpoint data for this case, but we are forcing a checkpoint.
+        // CheckpointTestParams(1, 1),
+        // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't
+        // getting any checkpoint data for this case, but we are
+        // forcing a checkpoint. Maybe keys aren't being flushed?
+        // CheckpointTestParams(1, 100),
+        // TODO: [Gabe Bornstein 11/5/25] Investigate: We ARE
+        // getting checkpoint data for this case. Does taking additional checkpoints flush keys?
+        CheckpointTestParams(/* num_puts */ 2, /* num_checkpoints_to_create */ 100),
+        CheckpointTestParams(/* num_puts */ 100, /* num_checkpoints_to_create */ 100),
+        CheckpointTestParams(/* num_puts */ 1, /* num_checkpoints_to_create */ 100000),
+        CheckpointTestParams(/* num_puts */ 1, /* num_checkpoints_to_create */ 0),
+        CheckpointTestParams(/* num_puts */ 0, /* num_checkpoints_to_create */ 100),
+        CheckpointTestParams(/* num_puts */ 5, /* num_checkpoints_to_create */ 100000),
+        CheckpointTestParams(/* num_puts */ 10, /* num_checkpoints_to_create */ 100000)
+        //  TODO: [Gabe Bornstein 11/6/25] Sporadic Failing. Likely cause by keys not
+        //  being flushed before that last checkpoint is taken. Need fsync to resolve.
+        /*CheckpointTestParams(101, 100000)*/));

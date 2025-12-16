@@ -165,6 +165,9 @@ class KVStore : public Table
 
   void set_checkpoint_distance(usize chi) noexcept;
 
+  static batt::StatusOr<turtle_kv::Checkpoint> recover_latest_checkpoint(
+      llfs::Volume& checkpoint_log_volume);
+
   usize get_checkpoint_distance() const noexcept
   {
     return this->checkpoint_distance_.load();
@@ -216,6 +219,14 @@ class KVStore : public Table
 
   void checkpoint_update_thread_main();
 
+  bool should_create_checkpoint() const
+  {
+    // If the batch count is greater than or equal to the checkpoint distance, we need to create a
+    // checkpoint.
+    //
+    return this->checkpoint_batch_count_ >= this->checkpoint_distance_.load();
+  }
+
   Status commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_job);
 
   void checkpoint_flush_thread_main();
@@ -242,6 +253,9 @@ class KVStore : public Table
 
   std::unique_ptr<ChangeLogWriter> log_writer_;
 
+  // How frequently we take checkpoints, where the units of distance are number of MemTables.
+  // (i.e. if checkpoint_distance_ == 3, we take a checkpoint every time 3 MemTables are filled up)
+  //
   std::atomic<usize> checkpoint_distance_;
 
   absl::Mutex base_checkpoint_mutex_;

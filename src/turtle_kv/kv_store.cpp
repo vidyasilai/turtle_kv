@@ -869,6 +869,58 @@ Status KVStore::update_checkpoint(const State* observed_state)
   return OkStatus();
 }
 
+using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+/*static*/ batt::StatusOr<turtle_kv::Checkpoint> KVStore::recover_latest_checkpoint(
+    llfs::Volume& checkpoint_log_volume)
+{
+  llfs::StatusOr<llfs::TypedVolumeReader<CheckpointEvent>> reader =
+      checkpoint_log_volume.typed_reader<CheckpointEvent>(
+          llfs::SlotRangeSpec{
+              .lower_bound = llfs::None,
+              .upper_bound = llfs::None,
+          },
+          llfs::LogReadMode::kDurable);
+
+  BATT_REQUIRE_OK(reader);
+
+  std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> prev_checkpoint;
+  prev_checkpoint.second.batch_upper_bound = 0;
+
+  for (;;) {
+    llfs::StatusOr<usize> n_slots_visited = reader->visit_typed_next(
+        batt::WaitForResource::kFalse,
+        [&prev_checkpoint](const llfs::SlotParse& slot,
+                           const turtle_kv::PackedCheckpoint& packed_checkpoint) {
+          // Validate that the checkpoints are in ascending order based on batch_upper_bound
+          //
+          BATT_CHECK_GE(packed_checkpoint.batch_upper_bound,
+                        prev_checkpoint.second.batch_upper_bound);
+          prev_checkpoint =
+              std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint>{slot, packed_checkpoint};
+          return llfs::OkStatus();
+        });
+
+    BATT_REQUIRE_OK(n_slots_visited);
+    VLOG(2) << "Visited n_slots_visited= " << *n_slots_visited << " checkpoints";
+    if (*n_slots_visited == 0) {
+      break;
+    }
+  }
+
+  // Return empty checkpoint if no checkpoints are found
+  //
+  if (prev_checkpoint.second.batch_upper_bound == 0) {
+    return Checkpoint::empty_at_batch(DeltaBatchId::from_u64(0));
+  }
+
+  return turtle_kv::Checkpoint::recover(checkpoint_log_volume,
+                                        prev_checkpoint.first,
+                                        prev_checkpoint.second);
+}
+
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 void KVStore::info_task_main() noexcept
@@ -953,6 +1005,8 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
+  // A MemTable has filled up.
+  //
   if (delta_batch) {
     // Apply the finalized MemTable to the current checkpoint (in-memory).
     //
@@ -968,7 +1022,7 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
 
   // If the batch count is below the checkpoint distance, we are done.
   //
-  if (this->checkpoint_batch_count_ < this->checkpoint_distance_.load()) {
+  if (!this->should_create_checkpoint()) {
     return nullptr;
   }
 

@@ -13,38 +13,40 @@
 
 namespace turtle_kv {
 
-#if 0  // TODO [tastolfi 2025-03-27] re-enable me!
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 /*static*/ StatusOr<Checkpoint> Checkpoint::recover(
     llfs::Volume& checkpoint_volume,
-    const llfs::SlotWithPayload<TabletCheckpoint>& packed_checkpoint) noexcept
+    llfs::SlotParse& slot,
+    const PackedCheckpoint& packed_checkpoint) noexcept
 {
-  const llfs::PageId tree_root_id = packed_checkpoint.payload.new_tree_root.as_page_id();
+  VLOG(1) << "Entering Checkpoint::recover";
 
-  BATT_ASSIGN_OK_RESULT(
-      std::shared_ptr<const TreeView> tree,
-      TreeView::from_page(
-          checkpoint_volume.cache().get_page(tree_root_id, llfs::OkIfNotFound{false})));
+  BATT_CHECK_GT(packed_checkpoint.batch_upper_bound, 0)
+      << "Invalid PackedCheckpoint: batch_upper_bound==0 indicates no checkpoint.";
 
-  if (static_cast<i16>(tree->height()) != packed_checkpoint.payload.new_tree_height) {
-    // return make_db_status(turtle_db::DBStatusCodes::kBadRecoveredTreeHeight);
-    return {batt::StatusCode::kDataLoss};  // TODO [tastolfi 2025-02-20]
-  }
+  const llfs::PageId tree_root_id = packed_checkpoint.new_tree_root.as_page_id();
 
+  Subtree tree = Subtree::from_page_id(tree_root_id);
+
+  batt::StatusOr<i32> height = tree.get_height(checkpoint_volume.cache());
+
+  BATT_REQUIRE_OK(height);
   BATT_ASSIGN_OK_RESULT(llfs::SlotReadLock slot_read_lock,
-                        checkpoint_volume.lock_slots(packed_checkpoint.slot_range,
+
+                        checkpoint_volume.lock_slots(slot.offset,
                                                      llfs::LogReadMode::kDurable,
                                                      /*lock_holder=*/"Checkpoint::recover"));
 
+  VLOG(1) << "Exiting Checkpoint::recover";
   return Checkpoint{
       tree_root_id,
-      std::move(tree),
-      DeltaBatchId::from_u64(packed_checkpoint.payload.slot_upper_bound),
+      std::make_shared<Subtree>(std::move(tree)),
+      *height,
+      DeltaBatchId::from_u64(packed_checkpoint.batch_upper_bound),
       CheckpointLock::make_durable(std::move(slot_read_lock)),
   };
 }
-#endif
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //

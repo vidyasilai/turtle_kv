@@ -55,7 +55,7 @@ Status create_checkpoint_log(llfs::StorageContext& storage_context,
   return OkStatus();
 }
 
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+// ==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 StatusOr<std::unique_ptr<llfs::Volume>> open_checkpoint_log(
     llfs::StorageContext& storage_context,
@@ -85,7 +85,10 @@ StatusOr<std::unique_ptr<llfs::Volume>> open_checkpoint_log(
   return storage_context.recover_object(batt::StaticType<llfs::PackedVolumeConfig>{},
                                         uuid,
                                         llfs::VolumeRuntimeOptions{
-                                            .slot_visitor_fn = llfs::VolumeReader::SlotVisitorFn{},
+                                            .slot_visitor_fn =
+                                                [](auto&&...) {
+                                                  return OkStatus();
+                                                },
                                             .root_log_options = root_log_options,
                                             .recycler_log_options = recycler_log_options,
                                             .trim_control = nullptr,
