@@ -129,7 +129,7 @@ inline MergeCompactor::ResultSet</*decay_to_items=*/true> BatchUpdateContext::de
         decayed_items.emplace_back(EditView::from_item_view(*maybe_item));
       }
     }
-  } else {
+  } else if (batch.size() > 0) {
     const ParallelAlgoDefaults& algo_defaults = parallel_algo_defaults();
 
     auto actual_edits = batch.get();
