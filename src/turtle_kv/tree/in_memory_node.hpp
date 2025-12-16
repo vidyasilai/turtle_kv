@@ -546,6 +546,10 @@ struct InMemoryNode {
    */
   Status try_flush(BatchUpdateContext& context);
 
+  /** \brief Attempt to collapse one level of the tree. Returns the node's single pivot.
+   */
+  Subtree try_shrink();
+
   /** \brief Merge the node in place with its right sibling.
    * 
    * Returns nullptr if `sibling` is completely consumed; otherwise, returns the modified sibling
@@ -567,12 +571,6 @@ struct InMemoryNode {
   /** \brief Merges the specified child with a sibling.
    */
   Status merge_child(BatchUpdateContext& update_context, i32 pivot_i) noexcept;
-
-  /** \brief If the node has a single pivot, attempts to flush updates out of the update buffer
-   * to grow the number of pivots. If all the updates are flushed and still only a single pivot
-   * remains, the single pivot (child) is returned.
-   */
-  StatusOr<Optional<Subtree>> flush_and_shrink(BatchUpdateContext& context) noexcept;
 
   /** \brief Returns true iff there are no MergedLevels or unserialized Subtree children in this
    * node.

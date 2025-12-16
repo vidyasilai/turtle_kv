@@ -216,9 +216,12 @@ Status InMemoryNode::apply_batch_update(BatchUpdate& update,
   //
   BATT_REQUIRE_OK(this->update_buffer_insert(update));
 
-  // Check for flush.
+  // Check for flush. If a flush is not necessary, batt::StatusCode::kUnavailable is returned.
   //
-  BATT_REQUIRE_OK(this->flush_if_necessary(update.context));
+  Status flush_status = this->flush_if_necessary(update.context);
+  if (flush_status != OkStatus() && flush_status != batt::StatusCode::kUnavailable) {
+    return flush_status;
+  }
 
   // We don't need to check whether _this_ node needs to be split; the caller will take care of
   // that!
@@ -351,6 +354,10 @@ Status InMemoryNode::flush_if_necessary(BatchUpdateContext& context, bool force_
   // If we have enough buffered edit bytes on some pivot to flush, then do it.
   //
   const MaxPendingBytes max_pending = this->find_max_pending();
+
+  if (!max_pending.byte_count) {
+    return {batt::StatusCode::kUnavailable};
+  }
 
   const bool flush_needed = force_flush ||                                                      //
                             (max_pending.byte_count >= this->tree_options.min_flush_size()) ||  //
@@ -692,13 +699,23 @@ Status InMemoryNode::split_child(BatchUpdateContext& update_context, i32 pivot_i
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+Subtree InMemoryNode::try_shrink()
+{
+  BATT_CHECK_EQ(this->children.size(), 1);
+  BATT_CHECK_EQ(this->pending_bytes.size(), 1);
+  BATT_CHECK_EQ(this->pending_bytes[0], 0);
+
+  return {std::move(this->children[0])};
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i) noexcept
 {
-  // Special case: we have a tree composed of one node (root) and one leaf (its only child).
-  // In this case, don't progress with the rest of the function, as we are in the middle of a
-  // flush and shrink.
+  // If there are no siblings to merge with, we must be in the middle of collapsing the tree
+  // (flush and shrink).
   //
-  if (this->height == 2 && this->pivot_count() == 1) {
+  if (this->pivot_count() == 1) {
     return OkStatus();
   }
 
@@ -737,9 +754,10 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
     need_update_buffer_compaction = true;
   }
 
-  BATT_REQUIRE_OK(this->children[sibling_i].to_in_memory_subtree(update_context,
-                                                                 this->tree_options,
-                                                                 this->height - 1));
+  BATT_REQUIRE_OK(this->children[sibling_i].unpack_if_necessary(update_context.page_loader,
+                                                                update_context.worker_pool,
+                                                                this->tree_options,
+                                                                this->height - 1));
 
   // Erase rightmost of {child subtree, sibling} in all metadata of the parent.
   //
@@ -858,38 +876,6 @@ Status InMemoryNode::merge_child(BatchUpdateContext& update_context, i32 pivot_i
   }
 
   return OkStatus();
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-StatusOr<Optional<Subtree>> InMemoryNode::flush_and_shrink(BatchUpdateContext& context) noexcept
-{
-  // If more than one pivot exists, nothings needs to be done.
-  //
-  usize pivot_count = this->pivot_count();
-  if (pivot_count > 1) {
-    return None;
-  }
-
-  const i32 single_pivot_i = 0;
-  BATT_CHECK_EQ(this->pending_bytes.size(), 1);
-  usize pending_bytes_count = this->pending_bytes[single_pivot_i];
-
-  // Flush until we have nothing left in the update buffer or until we gain more pivots.
-  //
-  while (pivot_count == 1 && pending_bytes_count > 0) {
-    BATT_REQUIRE_OK(this->flush_to_pivot(context, single_pivot_i));
-    pivot_count = this->pivot_count();
-    pending_bytes_count = this->pending_bytes[single_pivot_i];
-  }
-
-  // If still only one pivot remains, return the child.
-  //
-  if (pivot_count == 1) {
-    return std::move(this->children[single_pivot_i]);
-  } else {
-    return None;
-  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -1244,7 +1230,7 @@ Status InMemoryNode::try_borrow(BatchUpdateContext& context, InMemoryNode& sibli
           for (usize segment_i = 0; segment_i < segmented_level.segment_count(); ++segment_i) {
             Segment& segment = segmented_level.get_segment(segment_i);
             for (usize j = insert_pivot_i; j < insert_pivot_i + num_pivots_to_borrow; ++j) {
-              segment.insert_pivot(j, /*is_active*/false);
+              segment.insert_pivot(j, /*is_active*/ false);
             }
           }
         });

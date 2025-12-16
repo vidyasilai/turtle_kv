@@ -139,16 +139,21 @@ class Subtree
   StatusOr<Optional<Subtree>> try_split(BatchUpdateContext& context);
 
   /** \brief Attempts to merge the given Subtree in place with its right sibling.
-   * 
+   *
    * If the in place merge is successful, `sibling` is completely consumed and `None` is returned.
-   * 
+   *
    * If a borrow needs to occur, `this` is modified in place and the modified sibling is returned.
    */
   StatusOr<Optional<Subtree>> try_merge(BatchUpdateContext& context, Subtree&& sibling) noexcept;
 
-  /** \brief Attempt to make the root viable by flushing a batch.
+  /** \brief Attempt to make the root viable by flushing a batch. If nothing is available to
+   *  flush, returns batt::StatusCode::kUnavailable.
    */
   Status try_flush(BatchUpdateContext& context);
+
+  /** \brief Attempt to collapse a level of the tree.
+   */
+  Status try_shrink() noexcept;
 
   /** \brief Returns true iff this Subtree has no in-memory modifications.
    */
@@ -180,11 +185,13 @@ class Subtree
    */
   bool is_locked() const;
 
-  /** \brief Converts a serialized Subtree to its in-memory equivalent.
+  /** \brief Converts a serialized Subtree to its in-memory equivalent, modifying the Subtree in
+   * place. If the Subtree is already an in-memory type, this function does nothing.
    */
-  Status to_in_memory_subtree(BatchUpdateContext& context,
-                              const TreeOptions& tree_options,
-                              i32 height) noexcept;
+  Status unpack_if_necessary(llfs::PageLoader& page_loader,
+                             batt::WorkerPool& worker_pool,
+                             const TreeOptions& tree_options,
+                             i32 height) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:

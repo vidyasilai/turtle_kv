@@ -10,6 +10,74 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+/*static*/ std::unique_ptr<InMemoryLeaf> InMemoryLeaf::unpack(
+    llfs::PinnedPage&& pinned_leaf_page,
+    const TreeOptions& tree_options,
+    const PackedLeafPage& packed_leaf,
+    batt::WorkerPool& worker_pool) noexcept
+{
+  std::unique_ptr<InMemoryLeaf> new_leaf =
+      std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_leaf_page), tree_options);
+
+  const batt::TaskCount max_tasks{worker_pool.size() + 1};
+
+  Slice<const PackedKeyValue> packed_items = packed_leaf.items_slice();
+  std::vector<EditView> buffer;
+  buffer.reserve(packed_items.size());
+
+  if (max_tasks == 1) {
+    for (const PackedKeyValue& pkv : packed_items) {
+      buffer.emplace_back(to_edit_view(pkv));
+    }
+  } else {
+    const ParallelAlgoDefaults& algo_defaults = parallel_algo_defaults();
+
+    const auto src_begin = packed_items.begin();
+    const auto src_end = packed_items.end();
+    const auto dst_begin = buffer.begin();
+
+    const batt::WorkSlicePlan plan{batt::WorkSliceParams{
+                                       algo_defaults.copy_edits.min_task_size,
+                                       max_tasks,
+                                   },
+                                   src_begin,
+                                   src_end};
+
+    BATT_CHECK_GT(plan.n_tasks, 0);
+
+    {
+      batt::ScopedWorkContext work_context{worker_pool};
+
+      BATT_CHECK_OK(slice_work(work_context,
+                               plan,
+                               /*gen_work_fn=*/
+                               [&](usize /*task_index*/, isize task_offset, isize task_size) {
+                                 return [src_begin, dst_begin, task_offset, task_size] {
+                                   auto task_src_begin = std::next(src_begin, task_offset);
+                                   auto task_src_end = std::next(task_src_begin, task_size);
+                                   auto task_dst_begin = std::next(dst_begin, task_offset);
+
+                                   for (; task_src_begin != task_src_end; ++task_src_begin) {
+                                     *task_dst_begin = to_edit_view(*task_src_begin);
+                                     ++task_dst_begin;
+                                   }
+                                 };
+                               }))
+          << "work_context must not be closed!";
+    }
+  }
+
+  MergeCompactor::ResultSet</*decay_to_items=*/true> result_set;
+  result_set.append(std::move(buffer));
+  new_leaf->result_set = std::move(result_set);
+
+  new_leaf->set_edit_size_totals(compute_running_total(worker_pool, new_leaf->result_set));
+
+  return {std::move(new_leaf)};
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 SubtreeViability InMemoryLeaf::get_viability()
 {
   const usize total_size = this->get_items_size();
@@ -177,6 +245,35 @@ StatusOr<std::unique_ptr<InMemoryLeaf>> InMemoryLeaf::try_merge(
   this->set_edit_size_totals(context.compute_running_total(this->result_set));
 
   return nullptr;
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status InMemoryLeaf::apply_batch_update(BatchUpdate& update,
+                                        Optional<BoxedSeq<EditSlice>>&& current_result_set) noexcept
+{
+  if (current_result_set) {
+    // A valid BoxedSeq<EditSlice> was passed in. Merge compact this sequence with the incoming
+    // update.
+    //
+    BATT_ASSIGN_OK_RESULT(this->result_set,
+                          update.context.merge_compact_edits</*decay_to_items=*/true>(
+                              global_max_key(),
+                              [&](MergeCompactor& compactor) -> Status {
+                                compactor.push_level(update.result_set.live_edit_slices());
+                                compactor.push_level(std::move(*current_result_set));
+                                return OkStatus();
+                              }));
+  } else {
+    // If nothing was passed in, we have a new leaf being populated for the first time (empty tree).
+    //
+    this->result_set = update.context.decay_batch_to_items(update.result_set);
+  }
+
+  this->result_set.update_has_page_refs(update.result_set.has_page_refs());
+  this->set_edit_size_totals(update.context.compute_running_total(this->result_set));
+
+  return OkStatus();
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------

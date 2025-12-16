@@ -139,11 +139,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
           auto new_leaf = std::make_unique<InMemoryLeaf>(llfs::PinnedPage{}, tree_options);
 
-          new_leaf->result_set = std::move(update.context.decay_batch_to_items(update.result_set));
-
-          new_leaf->set_edit_size_totals(
-              update.context.compute_running_total(new_leaf->result_set));
-          update.edit_size_totals = None;
+          BATT_REQUIRE_OK(new_leaf->apply_batch_update(update, /*current_result_set*/ None));
 
           return Subtree{std::move(new_leaf)};
         }
@@ -172,18 +168,9 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           auto new_leaf =
               std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
 
-          BATT_ASSIGN_OK_RESULT(  //
-              new_leaf->result_set,
-              update.context.merge_compact_edits</*decay_to_items=*/true>(  //
-                  global_max_key(),
-                  [&](MergeCompactor& compactor) -> Status {
-                    compactor.push_level(update.result_set.live_edit_slices());
-                    compactor.push_level(packed_leaf.as_edit_slice_seq());
-                    return OkStatus();
-                  }));
-
-          new_leaf->set_edit_size_totals(
-              update.context.compute_running_total(new_leaf->result_set));
+          BATT_REQUIRE_OK(
+              new_leaf->apply_batch_update(update,
+                                           /*current_result_set*/ packed_leaf.as_edit_slice_seq()));
 
           return Subtree{std::move(new_leaf)};
 
@@ -211,19 +198,9 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
         BATT_CHECK_EQ(parent_height, 2);
 
-        BATT_ASSIGN_OK_RESULT(
-            in_memory_leaf->result_set,
-            update.context.merge_compact_edits</*decay_to_items=*/true>(
-                global_max_key(),
-                [&](MergeCompactor& compactor) -> Status {
-                  compactor.push_level(update.result_set.live_edit_slices());
-                  compactor.push_level(in_memory_leaf->result_set.live_edit_slices());
-                  return OkStatus();
-                }));
-
-        in_memory_leaf->result_set.update_has_page_refs(update.result_set.has_page_refs());
-        in_memory_leaf->set_edit_size_totals(
-            update.context.compute_running_total(in_memory_leaf->result_set));
+        BATT_REQUIRE_OK(in_memory_leaf->apply_batch_update(
+            update,
+            /*current_result_set*/ in_memory_leaf->result_set.live_edit_slices()));
 
         return Subtree{std::move(in_memory_leaf)};
       },
@@ -253,6 +230,8 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           return OkStatus();
         },
         [&](NeedsSplit needs_split) {
+          // TODO [vsilai 12-9-2025]: revist when VLDB changes are merged in.
+          //
           if (needs_split.too_many_segments && !needs_split.too_many_pivots &&
               !needs_split.keys_too_large) {
             Status flush_status = new_subtree->try_flush(update.context);
@@ -270,8 +249,12 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           return status;
         },
         [&](const NeedsMerge& needs_merge) {
-          // Only perform a shrink if the root has a single pivot.
+          // Only perform a flush and shrink if the root has a single pivot.
           //
+          if (!needs_merge.single_pivot) {
+            return OkStatus();
+          }
+
           Status status = new_subtree->flush_and_shrink(update.context);
 
           if (!status.ok()) {
@@ -322,44 +305,44 @@ Status Subtree::flush_and_shrink(BatchUpdateContext& context) noexcept
 {
   BATT_CHECK(!this->locked_.load());
 
-  return batt::case_of(
-      this->impl_,
+  BATT_CHECK(!this->is_serialized());
 
-      [&](const llfs::PageIdSlot& page_id_slot [[maybe_unused]]) -> Status {
-        return {batt::StatusCode::kUnimplemented};
-      },
+  while (!is_root_viable(this->get_viability())) {
+    // First, try flushing. If flushing makes the root viable, return immediately.
+    //
+    Status flush_status = this->try_flush(context);
+    if (flush_status != OkStatus() && flush_status != batt::StatusCode::kUnavailable) {
+      return flush_status;
+    }
 
-      [&](const std::unique_ptr<InMemoryLeaf>& leaf [[maybe_unused]]) -> Status {
-        return OkStatus();
-      },
+    SubtreeViability current_viability = this->get_viability();
+    if (is_root_viable(current_viability)) {
+      break;
+    }
 
-      [&](std::unique_ptr<InMemoryNode>& node) -> Status {
-        StatusOr<Optional<Subtree>> status_or_new_root = node->flush_and_shrink(context);
+    // Nothing was available to flush since the node's update buffer is empty. Try collapsing one
+    // level of the tree.
+    //
+    if (flush_status == batt::StatusCode::kUnavailable) {
+      // Note: At this point, we must have a node and not a leaf, since the `is_root_viable` check
+      // above will return Viable` for a leaf and we break out of the loop in that case.
+      //
+      BATT_REQUIRE_OK(this->try_shrink());
+    }
+  }
 
-        BATT_REQUIRE_OK(status_or_new_root);
+  // If the root is a leaf and there are no items in the leaf, set the root to be an empty subtree.
+  //
+  if (batt::is_case<std::unique_ptr<InMemoryLeaf>>(this->impl_)) {
+    std::unique_ptr<InMemoryLeaf>& root_leaf = std::get<std::unique_ptr<InMemoryLeaf>>(this->impl_);
+    BATT_CHECK(root_leaf);
 
-        if (!*status_or_new_root) {
-          return OkStatus();
-        }
+    if (!root_leaf->get_item_count()) {
+      this->impl_ = llfs::PageIdSlot::from_page_id(llfs::PageId{});
+    }
+  }
 
-        if (batt::is_case<std::unique_ptr<InMemoryLeaf>>((*status_or_new_root)->impl_)) {
-          const auto& leaf_ptr =
-              std::get<std::unique_ptr<InMemoryLeaf>>((*status_or_new_root)->impl_);
-          BATT_CHECK(leaf_ptr);
-
-          // If the new root that is returned is an empty leaf, set the root to be an empty
-          // subtree.
-          //
-          if (!leaf_ptr->get_items_size()) {
-            this->impl_ = llfs::PageIdSlot::from_page_id(llfs::PageId{});
-            return OkStatus();
-          }
-        }
-
-        this->impl_ = std::move((*status_or_new_root)->impl_);
-
-        return OkStatus();
-      });
+  return OkStatus();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -598,32 +581,21 @@ StatusOr<Optional<Subtree>> Subtree::try_merge(BatchUpdateContext& context,
         return {batt::StatusCode::kUnimplemented};
       },
 
-      [&](std::unique_ptr<InMemoryLeaf>& leaf) -> StatusOr<Optional<Subtree>> {
-        BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryLeaf>>(sibling.impl_));
-        auto& sibling_leaf_ptr = std::get<std::unique_ptr<InMemoryLeaf>>(sibling.impl_);
-        BATT_CHECK(sibling_leaf_ptr);
+      [&](auto& in_memory) -> StatusOr<Optional<Subtree>> {
+        using PtrT = std::decay_t<decltype(in_memory)>;
 
-        BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryLeaf> merged_leaf,  //
-                              leaf->try_merge(context, std::move(sibling_leaf_ptr)));
+        BATT_CHECK(batt::is_case<PtrT>(sibling.impl_));
+        auto& sibling_ptr = std::get<PtrT>(sibling.impl_);
+        BATT_CHECK(sibling_ptr);
 
-        BATT_CHECK_EQ(merged_leaf, nullptr);
+        BATT_ASSIGN_OK_RESULT(PtrT merged_subtree,
+                              in_memory->try_merge(context, std::move(sibling_ptr)));
 
-        return Optional<Subtree>{None};
-      },
-
-      [&](std::unique_ptr<InMemoryNode>& node) -> StatusOr<Optional<Subtree>> {
-        BATT_CHECK(batt::is_case<std::unique_ptr<InMemoryNode>>(sibling.impl_));
-        auto& sibling_node_ptr = std::get<std::unique_ptr<InMemoryNode>>(sibling.impl_);
-        BATT_CHECK(sibling_node_ptr);
-
-        BATT_ASSIGN_OK_RESULT(std::unique_ptr<InMemoryNode> merged_node,  //
-                              node->try_merge(context, std::move(sibling_node_ptr)));
-
-        if (merged_node == nullptr) {
+        if (merged_subtree == nullptr) {
           return Optional<Subtree>{None};
         }
 
-        return {Subtree{std::move(merged_node)}};
+        return {Subtree{std::move(merged_subtree)}};
       });
 }
 
@@ -641,12 +613,40 @@ Status Subtree::try_flush(BatchUpdateContext& context)
       },
 
       [&](const std::unique_ptr<InMemoryLeaf>& leaf [[maybe_unused]]) -> Status {
-        return OkStatus();
+        return {batt::StatusCode::kUnavailable};
       },
 
       [&](const std::unique_ptr<InMemoryNode>& node) -> Status {
         return node->try_flush(context);
       });
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status Subtree::try_shrink() noexcept
+{
+  BATT_CHECK(!this->locked_.load());
+
+  StatusOr<Subtree> new_root = batt::case_of(
+      this->impl_,
+
+      [&](const llfs::PageIdSlot& page_id_slot [[maybe_unused]]) -> StatusOr<Subtree> {
+        return {batt::StatusCode::kUnimplemented};
+      },
+
+      [&](const std::unique_ptr<InMemoryLeaf>& leaf [[maybe_unused]]) -> StatusOr<Subtree> {
+        return {batt::StatusCode::kUnavailable};
+      },
+
+      [&](const std::unique_ptr<InMemoryNode>& node) -> StatusOr<Subtree> {
+        return node->try_shrink();
+      });
+
+  BATT_REQUIRE_OK(new_root);
+
+  this->impl_ = std::move(new_root->impl_);
+
+  return OkStatus();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -748,9 +748,10 @@ void Subtree::lock()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status Subtree::to_in_memory_subtree(BatchUpdateContext& context,
-                                     const TreeOptions& tree_options,
-                                     i32 height) noexcept
+Status Subtree::unpack_if_necessary(llfs::PageLoader& page_loader,
+                                    batt::WorkerPool& worker_pool,
+                                    const TreeOptions& tree_options,
+                                    i32 height) noexcept
 {
   BATT_CHECK_GT(height, 0);
 
@@ -762,7 +763,7 @@ Status Subtree::to_in_memory_subtree(BatchUpdateContext& context,
     const llfs::PageLayoutId expected_layout = Subtree::expected_layout_for_height(height);
 
     StatusOr<llfs::PinnedPage> status_or_pinned_page = page_id_slot.load_through(
-        context.page_loader,
+        page_loader,
         llfs::PageLoadOptions{
             expected_layout,
             llfs::PinPageToJob::kDefault,
@@ -775,16 +776,12 @@ Status Subtree::to_in_memory_subtree(BatchUpdateContext& context,
     llfs::PinnedPage& pinned_page = *status_or_pinned_page;
 
     if (height == 1) {
-      auto new_leaf = std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
       const PackedLeafPage& packed_leaf = PackedLeafPage::view_of(pinned_page);
 
-      std::vector<EditView> items;
-      for (const PackedKeyValue& pkv : packed_leaf.items_slice()) {
-        items.emplace_back(to_edit_view(pkv));
-      }
-      new_leaf->result_set.append(std::move(items));
-
-      new_leaf->set_edit_size_totals(context.compute_running_total(new_leaf->result_set));
+      std::unique_ptr<InMemoryLeaf> new_leaf = InMemoryLeaf::unpack(batt::make_copy(pinned_page),
+                                                                    tree_options,
+                                                                    packed_leaf,
+                                                                    worker_pool);
 
       this->impl_ = std::move(new_leaf);
     } else {

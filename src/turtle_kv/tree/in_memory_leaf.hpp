@@ -40,6 +40,13 @@ struct InMemoryLeaf {
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  static std::unique_ptr<InMemoryLeaf> unpack(llfs::PinnedPage&& pinned_leaf_page,
+                                                        const TreeOptions& tree_options,
+                                                        const PackedLeafPage& packed_leaf,
+                                                        batt::WorkerPool& worker_pool) noexcept;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
   explicit InMemoryLeaf(llfs::PinnedPage&& pinned_leaf_page,
                         const TreeOptions& tree_options_arg) noexcept
       : pinned_leaf_page_{std::move(pinned_leaf_page)}
@@ -94,6 +101,9 @@ struct InMemoryLeaf {
 
   StatusOr<std::unique_ptr<InMemoryLeaf>> try_merge(BatchUpdateContext& context,
                                                     std::unique_ptr<InMemoryLeaf> sibling) noexcept;
+
+  Status apply_batch_update(BatchUpdate& update,
+                            Optional<BoxedSeq<EditSlice>>&& current_result_set) noexcept;
 
   Status start_serialize(TreeSerializeContext& context);
 
