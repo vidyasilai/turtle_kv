@@ -139,7 +139,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
           auto new_leaf = std::make_unique<InMemoryLeaf>(llfs::PinnedPage{}, tree_options);
 
-          BATT_REQUIRE_OK(new_leaf->apply_batch_update(update, /*current_result_set*/ None));
+          BATT_REQUIRE_OK(new_leaf->apply_batch_update(update));
 
           return Subtree{std::move(new_leaf)};
         }
@@ -164,13 +164,10 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           //+++++++++++-+-+--+----- --- -- -  -  -   -
           // Case: {BatchUpdate} + {PackedLeafPage} => InMemoryLeaf
 
-          const PackedLeafPage& packed_leaf = PackedLeafPage::view_of(pinned_page);
           auto new_leaf =
               std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
 
-          BATT_REQUIRE_OK(
-              new_leaf->apply_batch_update(update,
-                                           /*current_result_set*/ packed_leaf.as_edit_slice_seq()));
+          BATT_REQUIRE_OK(new_leaf->apply_batch_update(update));
 
           return Subtree{std::move(new_leaf)};
 
@@ -198,9 +195,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
         BATT_CHECK_EQ(parent_height, 2);
 
-        BATT_REQUIRE_OK(in_memory_leaf->apply_batch_update(
-            update,
-            /*current_result_set*/ in_memory_leaf->result_set.live_edit_slices()));
+        BATT_REQUIRE_OK(in_memory_leaf->apply_batch_update(update));
 
         return Subtree{std::move(in_memory_leaf)};
       },
