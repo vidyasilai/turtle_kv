@@ -169,6 +169,9 @@ struct NodeAlgorithms {
       BATT_ASSIGN_OK_RESULT(const bool done, combine_in_place(&value, found_in_level));
       if (done) {
         BATT_CHECK(value);
+        if (value->is_delete()) {
+          return {batt::StatusCode::kNotFound};
+        }
         return *value;
       }
     }
