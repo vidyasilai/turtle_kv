@@ -2,6 +2,7 @@
 
 #include <turtle_kv/tree/batch_update.hpp>
 #include <turtle_kv/tree/key_query.hpp>
+#include <turtle_kv/tree/subtree_metrics.hpp>
 #include <turtle_kv/tree/subtree_viability.hpp>
 #include <turtle_kv/tree/tree_options.hpp>
 #include <turtle_kv/tree/tree_serialize_context.hpp>
@@ -36,6 +37,8 @@ class Subtree
  public:
   friend class TreeScanGenerator;
 
+  using Metrics = SubtreeMetrics;
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   /** \brief Returns a new empty tree.
@@ -57,6 +60,14 @@ class Subtree
   /** \brief Returns the LLFS page layout id of the root of a subtree with the given height.
    */
   static llfs::PageLayoutId expected_layout_for_height(i32 height);
+
+  /** \brief Returns a reference to the global sub-tree metrics.
+   */
+  static Metrics& metrics()
+  {
+    static Metrics metrics_;
+    return metrics_;
+  }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

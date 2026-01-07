@@ -63,9 +63,9 @@ void CheckpointGenerator::join() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<usize> CheckpointGenerator::push_batch(std::unique_ptr<DeltaBatch>&& batch) noexcept
+StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& batch) noexcept
 {
-  VLOG(1) << "CheckpointGenerator::push_batch()" << BATT_INSPECT(batch->debug_info());
+  VLOG(1) << "CheckpointGenerator::apply_batch()" << BATT_INSPECT(batch->debug_info());
 
   // Skip unless base_checkpoint.rollup_slot_upper_bound() <= batch->slot_range.lower_bound
   //

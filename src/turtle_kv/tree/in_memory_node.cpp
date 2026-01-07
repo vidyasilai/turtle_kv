@@ -1415,6 +1415,7 @@ StatusOr<usize> MergedLevel::start_serialize(const InMemoryNode& node,
   BATT_CHECK_EQ(running_total.back() - running_total.front(), this->result_set.get_packed_size());
 
   auto filter_bits_per_key = context.tree_options().filter_bits_per_key();
+  llfs::PageSize filter_page_size = context.tree_options().filter_page_size();
 
   for (const Interval<usize>& part_extents : page_parts) {
     BATT_ASSIGN_OK_RESULT(
@@ -1424,7 +1425,7 @@ StatusOr<usize> MergedLevel::start_serialize(const InMemoryNode& node,
             packed_leaf_page_layout_id(),
             llfs::LruPriority{kNewLeafLruPriority},
             /*task_count=*/2,
-            [this, &node, part_extents, filter_bits_per_key](
+            [this, &node, part_extents, filter_bits_per_key, filter_page_size](
                 usize task_i,
                 llfs::PageCache& page_cache,
                 llfs::PageBuffer& page_buffer) -> TreeSerializeContext::PinPageToJobFn {
@@ -1441,6 +1442,7 @@ StatusOr<usize> MergedLevel::start_serialize(const InMemoryNode& node,
 
               return build_filter_for_leaf_in_job(page_cache,
                                                   filter_bits_per_key,
+                                                  filter_page_size,
                                                   page_buffer.page_id(),
                                                   items_in_this_page);
             }));

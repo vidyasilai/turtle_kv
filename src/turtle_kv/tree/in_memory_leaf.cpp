@@ -160,6 +160,7 @@ Status InMemoryLeaf::start_serialize(TreeSerializeContext& context)
       << BATT_INSPECT(this->tree_options.flush_size());
 
   auto filter_bits_per_key = context.tree_options().filter_bits_per_key();
+  llfs::PageSize filter_page_size = context.tree_options().filter_page_size();
 
   BATT_ASSIGN_OK_RESULT(
       const u64 future_id,
@@ -168,7 +169,7 @@ Status InMemoryLeaf::start_serialize(TreeSerializeContext& context)
           packed_leaf_page_layout_id(),
           llfs::LruPriority{kNewLeafLruPriority},
           /*task_count=*/2,
-          [this, filter_bits_per_key](
+          [this, filter_bits_per_key, filter_page_size](
               usize task_i,
               llfs::PageCache& page_cache,
               llfs::PageBuffer& page_buffer) -> StatusOr<TreeSerializeContext::PinPageToJobFn> {
@@ -185,6 +186,7 @@ Status InMemoryLeaf::start_serialize(TreeSerializeContext& context)
 
             return build_filter_for_leaf_in_job(page_cache,
                                                 filter_bits_per_key,
+                                                filter_page_size,
                                                 page_buffer.page_id(),
                                                 this->result_set.get());
           }));
