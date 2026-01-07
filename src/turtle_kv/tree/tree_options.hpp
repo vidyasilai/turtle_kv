@@ -132,6 +132,16 @@ class TreeOptions
     return *this;
   }
 
+  double min_flush_factor() const
+  {
+    return this->min_flush_factor_;
+  }
+
+  double max_flush_factor() const
+  {
+    return this->max_flush_factor_;
+  }
+
   usize min_flush_size() const
   {
     const usize nominal = this->flush_size() * this->min_flush_factor_;
@@ -142,6 +152,21 @@ class TreeOptions
   {
     const usize nominal = this->flush_size() * this->max_flush_factor_;
     return std::max(nominal, this->min_flush_size());
+  }
+
+  //----- --- -- -  -  -   -
+
+  // TODO [tastolfi 2025-10-27] add b_tree_mode option.
+
+  Self& set_b_tree_mode_enabled(bool b)
+  {
+    this->b_tree_mode_ = b;
+    return *this;
+  }
+
+  bool is_b_tree_mode_enabled() const
+  {
+    return this->b_tree_mode_;
   }
 
   //----- --- -- -  -  -   -
@@ -392,6 +417,8 @@ class TreeOptions
   double max_flush_factor_ = 1.0;
 
   IsSizeTiered size_tiered_{false};
+
+  bool b_tree_mode_{false};
 };
 
 }  // namespace turtle_kv

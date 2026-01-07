@@ -56,6 +56,23 @@
  */
 #define TURTLE_KV_ENABLE_METRICS 1
 
+/** \brief Changes layout of leaf pages: if 1, then keys and values are packed together, else (if
+ * 0), keys are packed with keys, values with values.
+ */
+#define TURTLE_KV_PACK_KEYS_TOGETHER 0
+
+/** \brief Enable/disable collection of detailed stats to profile update code paths.
+ */
+#define TURTLE_KV_PROFILE_UPDATES 1
+
+/** \brief Enable/disable collection of detailed stats to profile query code paths.
+ */
+#define TURTLE_KV_PROFILE_QUERIES 1
+
+/** \brief Enable/disable creating multiple batches from a single bigger memtable.
+ */
+#define TURTLE_KV_BIG_MEM_TABLES 0
+
 namespace turtle_kv {
 
 constexpr i64 kNodeLruPriority = 4;
