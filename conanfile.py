@@ -67,10 +67,10 @@ class TurtleKvRecipe(ConanFile):
 
         if platform.system() == "Linux":
             self.requires("keyvcr/[>=0.2.1 <1]", **VISIBLE)
-            self.requires("vqf/0.2.5", **VISIBLE)
-            self.requires("libfuse/3.16.2", **VISIBLE)
-            self.requires("libunwind/1.8.1", **VISIBLE, **OVERRIDE)
-            self.requires("liburing/2.11", **VISIBLE)
+            self.requires("vqf/[>=0.2.5 <1]", **VISIBLE)
+            self.requires("libfuse/[>=3.16.2 <4]", **VISIBLE)
+            self.requires("libunwind/[>=1.8.1 <2]", **VISIBLE, **OVERRIDE)
+            self.requires("liburing/[>=2.11 <3]", **VISIBLE)
 
     def build_requirements(self):
         self.tool_requires("cmake/[>=3.20.0 <4]")
