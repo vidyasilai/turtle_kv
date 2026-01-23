@@ -159,6 +159,9 @@ struct NodeAlgorithms {
       BATT_ASSIGN_OK_RESULT(const bool done, combine_in_place(&value, found_in_level));
       if (done) {
         BATT_CHECK(value);
+        if (value->is_delete()) {
+          return {batt::StatusCode::kNotFound};
+        }
         return *value;
       }
     }
@@ -169,7 +172,7 @@ struct NodeAlgorithms {
 
     BATT_REQUIRE_OK(combine_in_place(&value, subtree_result));
 
-    if (!value) {
+    if (!value || value->is_delete()) {
       return {batt::StatusCode::kNotFound};
     }
 

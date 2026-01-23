@@ -187,6 +187,42 @@ struct SubtreeBatchUpdateScenario {
   void run();
 };
 
+struct BatchUpdateGenerator {
+  StableStringStore strings;
+  RandomResultSetGenerator result_set_generator;
+  std::vector<KeyView> pending_deletes;
+  usize delete_frequency;
+
+  explicit BatchUpdateGenerator(usize delete_frequency_param,
+                                const RandomResultSetGenerator& gen) noexcept
+      : result_set_generator{gen}
+      , delete_frequency{delete_frequency_param}
+  {
+  }
+
+  template <typename Rng>
+  ResultSet<false> next_batch(usize batch_i, Rng& rng, bool update_pending_deletes = false)
+  {
+    ResultSet<false> result_set =
+        result_set_generator(DecayToItem<false>{}, rng, this->strings, this->pending_deletes);
+
+    if (update_pending_deletes) {
+      if (!this->pending_deletes.empty()) {
+        this->pending_deletes.clear();
+      }
+
+      if (batch_i % this->delete_frequency == 0) {
+        BATT_CHECK(this->pending_deletes.empty());
+        for (const EditView& edit : result_set.get()) {
+          pending_deletes.emplace_back(edit.key);
+        }
+      }
+    }
+
+    return result_set;
+  }
+};
+
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 TEST(InMemoryNodeTest, Segment)
@@ -342,11 +378,11 @@ void SubtreeBatchUpdateScenario::run()
                              tree_options,
                              /*byte_capacity=*/1500 * kMiB);
 
-  StableStringStore strings;
   RandomResultSetGenerator result_set_generator;
-  turtle_kv::OrderedMapTable<absl::btree_map<std::string_view, std::string_view>> expected_table;
-
   result_set_generator.set_key_size(24).set_value_size(100).set_size(items_per_leaf);
+  BatchUpdateGenerator update_generator{/*delete_frequency=*/5, /*gen=*/result_set_generator};
+
+  turtle_kv::OrderedMapTable<absl::btree_map<std::string_view, std::string_view>> expected_table;
 
   Subtree tree = Subtree::make_empty();
 
@@ -378,7 +414,9 @@ void SubtreeBatchUpdateScenario::run()
                 .metrics = metrics,
                 .overcommit = llfs::PageCacheOvercommit::not_allowed(),
             },
-        .result_set = result_set_generator(DecayToItem<false>{}, rng, strings),
+        // TODO [vsilai 2026-01-09] Enable delete support for batch generation.
+        //
+        .result_set = update_generator.next_batch(i, rng, /*update_pending_deletes=*/false),
         .edit_size_totals = None,
     };
     update.update_edit_size_totals();

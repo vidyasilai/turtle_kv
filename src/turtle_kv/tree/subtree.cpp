@@ -142,14 +142,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
           auto new_leaf = std::make_unique<InMemoryLeaf>(llfs::PinnedPage{}, tree_options);
 
-          new_leaf->result_set = update.result_set;
-
-          if (!update.edit_size_totals) {
-            update.update_edit_size_totals();
-          }
-
-          new_leaf->set_edit_size_totals(std::move(*update.edit_size_totals));
-          update.edit_size_totals = None;
+          BATT_REQUIRE_OK(new_leaf->apply_batch_update(update));
 
           return Subtree{std::move(new_leaf)};
         }
@@ -175,22 +168,10 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           //+++++++++++-+-+--+----- --- -- -  -  -   -
           // Case: {BatchUpdate} + {PackedLeafPage} => InMemoryLeaf
 
-          const PackedLeafPage& packed_leaf = PackedLeafPage::view_of(pinned_page);
           auto new_leaf =
               std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
 
-          BATT_ASSIGN_OK_RESULT(  //
-              new_leaf->result_set,
-              update.context.merge_compact_edits(  //
-                  global_max_key(),
-                  [&](MergeCompactor& compactor) -> Status {
-                    compactor.push_level(update.result_set.live_edit_slices());
-                    compactor.push_level(packed_leaf.as_edit_slice_seq());
-                    return OkStatus();
-                  }));
-
-          new_leaf->set_edit_size_totals(
-              update.context.compute_running_total(new_leaf->result_set));
+          BATT_REQUIRE_OK(new_leaf->apply_batch_update(update));
 
           return Subtree{std::move(new_leaf)};
 
@@ -218,19 +199,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
         BATT_CHECK_EQ(parent_height, 2);
 
-        BATT_ASSIGN_OK_RESULT(
-            in_memory_leaf->result_set,
-            update.context.merge_compact_edits(
-                global_max_key(),
-                [&](MergeCompactor& compactor) -> Status {
-                  compactor.push_level(update.result_set.live_edit_slices());
-                  compactor.push_level(in_memory_leaf->result_set.live_edit_slices());
-                  return OkStatus();
-                }));
-
-        in_memory_leaf->result_set.update_has_page_refs(update.result_set.has_page_refs());
-        in_memory_leaf->set_edit_size_totals(
-            update.context.compute_running_total(in_memory_leaf->result_set));
+        BATT_REQUIRE_OK(in_memory_leaf->apply_batch_update(update));
 
         return Subtree{std::move(in_memory_leaf)};
       },
@@ -260,6 +229,16 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
           return OkStatus();
         },
         [&](NeedsSplit needs_split) {
+          // TODO [vsilai 2025-12-09]: revist when VLDB changes are merged in.
+          //
+          if (needs_split.too_many_segments && !needs_split.too_many_pivots &&
+              !needs_split.keys_too_large) {
+            Status flush_status = new_subtree->try_flush(update.context);
+            if (flush_status.ok() && batt::is_case<Viable>(new_subtree->get_viability())) {
+              return OkStatus();
+            }
+          }
+
           Status status =
               new_subtree->split_and_grow(update.context, tree_options, key_upper_bound);
 
@@ -270,7 +249,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
         },
         [&](const NeedsMerge& needs_merge) {
           BATT_CHECK(!needs_merge.single_pivot)
-              << "TODO [tastolfi 2025-03-26] implement flush and shrink";
+              << "TODO [vsilai 2026-01-08] implement flush and shrink";
           return OkStatus();
         }));
   }

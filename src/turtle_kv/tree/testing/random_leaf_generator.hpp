@@ -59,7 +59,7 @@ class RandomLeafGenerator
 
     // Generate a sorted run of random key/value pairs.
     //
-    result.result_set = this->items_generator_(decay_to_items, rng, store);
+    result.result_set = this->items_generator_(decay_to_items, rng, store, /*deleted=*/{});
 
     batt::WorkerPool& worker_pool = batt::WorkerPool::null_pool();
 
@@ -72,7 +72,7 @@ class RandomLeafGenerator
     // Compute a running total of packed sizes, so we can split the result set in to leaf pages.
     //
     batt::RunningTotal running_total =
-        compute_running_total(worker_pool, result.result_set, DecayToItem<true>{});
+        compute_running_total(worker_pool, result.result_set, DecayToItem<kDecayToItems>{});
 
     SplitParts page_parts = split_parts(       //
         running_total,                         //

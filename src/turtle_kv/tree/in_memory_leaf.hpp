@@ -1,5 +1,6 @@
 #pragma once
 
+#include <turtle_kv/tree/batch_update.hpp>
 #include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/subtree_viability.hpp>
 #include <turtle_kv/tree/tree_options.hpp>
@@ -32,7 +33,7 @@ struct InMemoryLeaf {
 
   llfs::PinnedPage pinned_leaf_page_;
   TreeOptions tree_options;
-  MergeCompactor::ResultSet</*decay_to_items=*/false> result_set;
+  Optional<MergeCompactor::ResultSet</*decay_to_items=*/true>> result_set;
   std::shared_ptr<const batt::RunningTotal> shared_edit_size_totals_;
   Optional<batt::RunningTotal::slice_type> edit_size_totals;
   mutable std::atomic<u64> future_id_{~u64{0}};
@@ -43,6 +44,7 @@ struct InMemoryLeaf {
                         const TreeOptions& tree_options_arg) noexcept
       : pinned_leaf_page_{std::move(pinned_leaf_page)}
       , tree_options{tree_options_arg}
+      , result_set{None}
   {
   }
 
@@ -56,13 +58,15 @@ struct InMemoryLeaf {
 
   usize get_item_count() const
   {
-    return this->result_set.size();
+    BATT_CHECK(this->result_set);
+    return this->result_set->size();
   }
 
   usize get_items_size() const
   {
     BATT_CHECK(this->edit_size_totals);
-    BATT_CHECK_EQ(this->edit_size_totals->size(), this->result_set.size() + 1);
+    BATT_CHECK(this->result_set);
+    BATT_CHECK_EQ(this->edit_size_totals->size(), this->result_set->size() + 1);
 
     if (this->edit_size_totals->empty()) {
       return 0;
@@ -72,17 +76,20 @@ struct InMemoryLeaf {
 
   KeyView get_min_key() const
   {
-    return this->result_set.get_min_key();
+    BATT_CHECK(this->result_set);
+    return this->result_set->get_min_key();
   }
 
   KeyView get_max_key() const
   {
-    return this->result_set.get_max_key();
+    BATT_CHECK(this->result_set);
+    return this->result_set->get_max_key();
   }
 
   StatusOr<ValueView> find_key(const KeyView& key) const
   {
-    return this->result_set.find_key(key);
+    BATT_CHECK(this->result_set);
+    return this->result_set->find_key(key);
   }
 
   SubtreeViability get_viability();
@@ -90,6 +97,8 @@ struct InMemoryLeaf {
   StatusOr<std::unique_ptr<InMemoryLeaf>> try_split();
 
   StatusOr<SplitPlan> make_split_plan() const;
+
+  Status apply_batch_update(BatchUpdate& update) noexcept;
 
   Status start_serialize(TreeSerializeContext& context);
 
