@@ -81,7 +81,8 @@ class CheckpointGenerator
    *
    * \return The number of batches accepted if successful; error Status otherwise.
    */
-  StatusOr<usize> apply_batch(std::unique_ptr<DeltaBatch>&& batch) noexcept;
+  StatusOr<usize> apply_batch(std::unique_ptr<DeltaBatch>&& batch,
+                              llfs::PageCacheOvercommit& overcommit) noexcept;
 
   /** \brief Finalize the current checkpoint rollup and return a CheckpointJob that can be handed to
    * a checkpoint committer.
@@ -94,7 +95,8 @@ class CheckpointGenerator
    */
   StatusOr<std::unique_ptr<CheckpointJob>> finalize_checkpoint(
       batt::Grant&& token,
-      std::shared_ptr<batt::Grant::Issuer>&& token_issuer) noexcept;
+      std::shared_ptr<batt::Grant::Issuer>&& token_issuer,
+      llfs::PageCacheOvercommit& overcommit) noexcept;
 
   llfs::PageCacheJob& page_cache_job() const
   {
@@ -119,7 +121,7 @@ class CheckpointGenerator
 
   /** \brief Serializes any deferred pages in the current base_checkpoint_ tree.
    */
-  Status serialize_checkpoint() noexcept;
+  Status serialize_checkpoint(llfs::PageCacheOvercommit& overcommit) noexcept;
 
   /** \brief Clears `this->roots_to_remove_` by deleting obsolete root pages from the current job's
    * root set.

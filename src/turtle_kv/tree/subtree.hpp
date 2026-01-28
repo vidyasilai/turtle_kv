@@ -104,16 +104,19 @@ class Subtree
 
   /** \brief Returns the current height of the tree.
    */
-  StatusOr<i32> get_height(llfs::PageLoader& page_loader) const;
+  StatusOr<i32> get_height(llfs::PageLoader& page_loader,
+                           llfs::PageCacheOvercommit& overcommit) const;
 
   /** \brief Returns the min-ordered key in the range of this subtree.
    */
   StatusOr<KeyView> get_min_key(llfs::PageLoader& page_loader,
+                                llfs::PageCacheOvercommit& overcommit,
                                 llfs::PinnedPage& pinned_page_out) const;
 
   /** \brief Returns the max-ordered key in the range of this subtree.
    */
   StatusOr<KeyView> get_max_key(llfs::PageLoader& page_loader,
+                                llfs::PageCacheOvercommit& overcommit,
                                 llfs::PinnedPage& pinned_page_out) const;
 
   /** \brief Evaluates whether this Subtree is viable to be serialized in its present state.  This

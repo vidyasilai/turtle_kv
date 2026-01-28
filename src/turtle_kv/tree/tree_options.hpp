@@ -289,6 +289,9 @@ class TreeOptions
     if (BATT_HINT_TRUE(this->trie_index_reserve_size_)) {
       return *this->trie_index_reserve_size_;
     }
+    if (this->leaf_size() < 128 * kKiB) {
+      return 0;
+    }
     if (this->key_size_hint() > 16) {
       return ((this->expected_items_per_leaf() * this->key_size_hint() + 15) / 16) * 5 / 8;
     }

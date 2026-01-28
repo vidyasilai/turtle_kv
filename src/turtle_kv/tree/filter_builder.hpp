@@ -60,6 +60,7 @@ struct BloomFilterMetrics {
 
 struct FilterPageAlloc {
   llfs::PageCache& page_cache_;
+  llfs::PageCacheOvercommit overcommit_;
   llfs::PageId leaf_page_id_;
   Status status;
   llfs::PinnedPage pinned_filter_page;
@@ -73,10 +74,14 @@ struct FilterPageAlloc {
   explicit FilterPageAlloc(llfs::PageCache& page_cache,
                            llfs::PageId leaf_page_id,
                            llfs::PageLayoutId filter_page_layout_id,
-                           llfs::PageSize filter_page_size) noexcept
+                           llfs::PageSize filter_page_size,
+						   bool overcommit_triggered) noexcept
       : page_cache_{page_cache}
       , leaf_page_id_{leaf_page_id}
   {
+    this->overcommit_.allow(true);
+    this->overcommit_.trigger(overcommit_triggered);
+
     this->status = [&]() -> Status {
       BATT_ASSIGN_OK_RESULT(
           this->pinned_filter_page,
@@ -87,12 +92,16 @@ struct FilterPageAlloc {
                                                   batt::make_copy(filter_page_layout_id),
                                                   llfs::LruPriority{kNewFilterLruPriority},
                                                   batt::WaitForResource::kFalse,
+												  this->overcommit_,
                                               }));
 
       this->filter_page_id = this->pinned_filter_page.page_id();
       BATT_CHECK(this->filter_page_id);
 
       BATT_ASSIGN_OK_RESULT(this->filter_buffer, this->pinned_filter_page->get_new_page_buffer());
+
+      LOG_IF_EVERY_N(INFO, this->overcommit_.is_triggered(), 100)
+          << "cache over-commit triggered for filter page";
 
       return OkStatus();
     }();
@@ -119,6 +128,7 @@ struct FilterPageAlloc {
 //
 template <typename ItemsT>
 Status build_bloom_filter_for_leaf(llfs::PageCache& page_cache,
+                                   bool overcommit_triggered,
                                    usize filter_bits_per_key,
                                    llfs::PageSize filter_page_size,
                                    llfs::PageId leaf_page_id,
@@ -135,6 +145,7 @@ Status build_bloom_filter_for_leaf(llfs::PageCache& page_cache,
       leaf_page_id,
       llfs::PackedBloomFilterPage::page_layout_id(),
       filter_page_size,
+	  overcommit_triggered,
   };
   BATT_REQUIRE_OK(alloc.status);
 
@@ -237,6 +248,7 @@ inline Status build_vqf_filter(const MutableBuffer& filter_buffer,
 //
 template <typename ItemsT>
 Status build_quotient_filter_for_leaf(llfs::PageCache& page_cache,
+                                      bool overcommit_triggered,
                                       usize filter_bits_per_key,
                                       llfs::PageSize filter_page_size,
                                       llfs::PageId leaf_page_id,
@@ -251,6 +263,7 @@ Status build_quotient_filter_for_leaf(llfs::PageCache& page_cache,
       leaf_page_id,
       VqfFilterPageView::page_layout_id(),
       filter_page_size,
+	  overcommit_triggered,
   };
   BATT_REQUIRE_OK(alloc.status);
 
@@ -329,6 +342,7 @@ Status build_quotient_filter_for_leaf(llfs::PageCache& page_cache,
 //
 template <typename ItemsT>
 auto build_filter_for_leaf_in_job(llfs::PageCache& page_cache,
+                                  bool overcommit_triggered,
                                   usize filter_bits_per_key,
                                   llfs::PageSize filter_page_size,
                                   llfs::PageId leaf_page_id,
@@ -336,6 +350,7 @@ auto build_filter_for_leaf_in_job(llfs::PageCache& page_cache,
 {
 #if TURTLE_KV_USE_BLOOM_FILTER
   Status filter_status = build_bloom_filter_for_leaf(page_cache,
+                                                     overcommit_triggered,
                                                      filter_bits_per_key,
                                                      filter_page_size,
                                                      leaf_page_id,
@@ -343,6 +358,7 @@ auto build_filter_for_leaf_in_job(llfs::PageCache& page_cache,
 
 #elif TURTLE_KV_USE_QUOTIENT_FILTER
   Status filter_status = build_quotient_filter_for_leaf(page_cache,
+                                                        overcommit_triggered,
                                                         filter_bits_per_key,
                                                         filter_page_size,
                                                         leaf_page_id,

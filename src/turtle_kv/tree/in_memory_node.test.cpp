@@ -60,6 +60,7 @@ using turtle_kv::NeedsSplit;
 using turtle_kv::None;
 using turtle_kv::OkStatus;
 using turtle_kv::Optional;
+using turtle_kv::PageSliceStorage;
 using turtle_kv::ParentNodeHeight;
 using turtle_kv::PinningPageLoader;
 using turtle_kv::Slice;
@@ -401,6 +402,8 @@ void SubtreeBatchUpdateScenario::run()
 
   usize total_items = 0;
 
+  turtle_kv::BatchUpdateMetrics metrics;
+
   for (usize i = 0; i < max_i; ++i) {
     BatchUpdate update{
         .context =
@@ -408,6 +411,8 @@ void SubtreeBatchUpdateScenario::run()
                 .worker_pool = worker_pool,
                 .page_loader = *page_loader,
                 .cancel_token = batt::CancelToken{},
+                .metrics = metrics,
+                .overcommit = llfs::PageCacheOvercommit::not_allowed(),
             },
         // TODO [vsilai 2026-01-09] Enable delete support for batch generation.
         //
@@ -424,7 +429,8 @@ void SubtreeBatchUpdateScenario::run()
     Status table_update_status = update_table(expected_table, update.result_set);
     ASSERT_TRUE(table_update_status.ok()) << BATT_INSPECT(table_update_status);
 
-    StatusOr<i32> tree_height = tree.get_height(*page_loader);
+    StatusOr<i32> tree_height =
+        tree.get_height(*page_loader, llfs::PageCacheOvercommit::not_allowed());
     ASSERT_TRUE(tree_height.ok()) << BATT_INSPECT(tree_height);
 
     Status status =  //
@@ -453,7 +459,12 @@ void SubtreeBatchUpdateScenario::run()
       }
 
       std::unique_ptr<llfs::PageCacheJob> page_job = page_cache->new_job();
-      TreeSerializeContext context{tree_options, *page_job, worker_pool};
+      TreeSerializeContext context{
+          tree_options,
+          *page_job,
+          worker_pool,
+          llfs::PageCacheOvercommit::not_allowed(),
+      };
 
       Status start_status = tree.start_serialize(context);
       ASSERT_TRUE(start_status.ok()) << BATT_INSPECT(start_status);
@@ -484,12 +495,16 @@ void SubtreeBatchUpdateScenario::run()
         std::array<std::pair<KeyView, ValueView>, kMaxScanSize> scan_items_buffer;
         KeyView min_key = update.result_set.get_min_key();
 
-        KVStoreScanner kv_scanner{*page_loader,
-                                  root_ptr->page_id_slot_or_panic(),
-                                  BATT_OK_RESULT_OR_PANIC(root_ptr->get_height(*page_loader)),
-                                  min_key,
-                                  tree_options.trie_index_sharded_view_size(),
-                                  None};
+        PageSliceStorage page_slice_storage;
+
+        KVStoreScanner kv_scanner{
+            *page_loader,
+            root_ptr->page_id_slot_or_panic(),
+            BATT_OK_RESULT_OR_PANIC(root_ptr->get_height(*page_loader,  //
+                                                         llfs::PageCacheOvercommit::not_allowed())),
+            min_key,
+            tree_options.trie_index_sharded_view_size(),
+            &page_slice_storage};
 
         usize n_read = 0;
         {

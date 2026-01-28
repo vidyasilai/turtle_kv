@@ -2,6 +2,7 @@
 //
 
 #include <turtle_kv/config.hpp>
+#include <turtle_kv/on_page_cache_overcommit.hpp>
 
 #include <turtle_kv/checkpoint_log.hpp>
 #include <turtle_kv/file_utils.hpp>
@@ -825,6 +826,9 @@ Status KVStore::update_checkpoint(const State* observed_state)
   });
 
   for (;;) {
+    // Multiple threads are potentially racing to install a new active MemTable;
+    // the important thing is that the old mem table has been replaced.
+    //
     if (observed_state->mem_table_ != old_mem_table) {
       BATT_CHECK_NE(observed_state, new_state);
       BATT_CHECK_EQ(new_state->use_count(), 1);
@@ -1001,6 +1005,7 @@ std::unique_ptr<DeltaBatch> KVStore::compact_memtable(boost::intrusive_ptr<MemTa
   TURTLE_KV_COLLECT_LATENCY(this->metrics_.compact_batch_latency,
                             delta_batch->merge_compact_edits());
 
+  this->metrics_.batch_count.add(1);
   this->metrics_.batch_edits_count.add(delta_batch->result_set_size());
 
   return delta_batch;
@@ -1039,14 +1044,21 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
+  // Allow the page cache to be temporarily overcommitted so we don't deadlock; but if overcommit is
+  // triggered, we immediately truncate the checkpoint to try to unpin pages ASAP.
+  //
+  llfs::PageCacheOvercommit overcommit;
+  overcommit.allow(true);
+  BATT_CHECK(!overcommit.is_triggered());
+
   // A MemTable has filled up.
   //
   if (delta_batch) {
     // Apply the finalized MemTable to the current checkpoint (in-memory).
     //
-    StatusOr<usize> push_status =
-        TURTLE_KV_COLLECT_LATENCY(this->metrics_.apply_batch_latency,
-                                  this->checkpoint_generator_.apply_batch(std::move(delta_batch)));
+    StatusOr<usize> push_status = TURTLE_KV_COLLECT_LATENCY(
+        this->metrics_.apply_batch_latency,
+        this->checkpoint_generator_.apply_batch(std::move(delta_batch), overcommit));
 
     BATT_REQUIRE_OK(push_status);
     BATT_CHECK_EQ(*push_status, 1);
@@ -1056,8 +1068,18 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
 
   // If the batch count is below the checkpoint distance, we are done.
   //
-  if (!this->should_create_checkpoint()) {
+  if (!overcommit.is_triggered() && !this->should_create_checkpoint()) {
     return nullptr;
+  }
+
+  if (overcommit.is_triggered()) {
+    on_page_cache_overcommit(
+        [this](std::ostream& out) {
+          out << "Finalizing checkpoint early due to cache overcommit;"
+              << BATT_INSPECT(this->checkpoint_batch_count_);
+        },
+        this->page_cache(),
+        this->metrics_.overcommit);
   }
 
   // Else if we have reached the target checkpoint distance, then flush the checkpoint and start a
@@ -1074,11 +1096,11 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
 
   // Serialize all pages and create the job.
   //
-  StatusOr<std::unique_ptr<CheckpointJob>> checkpoint_job =
-      TURTLE_KV_COLLECT_LATENCY(this->metrics_.finalize_checkpoint_latency,
-                                this->checkpoint_generator_.finalize_checkpoint(
-                                    std::move(checkpoint_token),
-                                    batt::make_copy(this->checkpoint_token_pool_)));
+  StatusOr<std::unique_ptr<CheckpointJob>> checkpoint_job = TURTLE_KV_COLLECT_LATENCY(
+      this->metrics_.finalize_checkpoint_latency,
+      this->checkpoint_generator_.finalize_checkpoint(std::move(checkpoint_token),
+                                                      batt::make_copy(this->checkpoint_token_pool_),
+                                                      overcommit));
 
   BATT_REQUIRE_OK(checkpoint_job);
 
@@ -1222,8 +1244,8 @@ void KVStore::add_obsolete_state(const State* old_state)
 //
 void KVStore::epoch_thread_main()
 {
-  constexpr i64 kMinEpochUsec = 15;  // 12500;
-  constexpr i64 kMaxEpochUsec = 20;  // 15000;
+  constexpr i64 kMinEpochUsec = 125000;
+  constexpr i64 kMaxEpochUsec = 250000;
 
   std::default_random_engine rng{std::random_device{}()};
   std::uniform_int_distribution<i64> pick_delay_usec{kMinEpochUsec, kMaxEpochUsec};
@@ -1307,6 +1329,11 @@ void KVStore::collect_stats(
   fn("page_cache.get_count", page_cache.get_count.get());
 
   emit_latency("page_cache.allocate_page_latency", page_cache.allocate_page_alloc_latency);
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+  // Page cache overcommit metrics.
+  //
+  fn("page_cache.overcommit.trigger_count", this->metrics_.overcommit.trigger_count.get());
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
   // Tree Node related stats.

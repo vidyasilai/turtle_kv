@@ -109,6 +109,7 @@ TEST(KVStoreTest, CreateAndOpen)
           auto p_storage_context =
               llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
                                                 scoped_io_ring->get_io_ring());
+
           BATT_CHECK_OK(KVStore::configure_storage_context(*p_storage_context,
                                                            tree_options,
                                                            runtime_options));

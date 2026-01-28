@@ -3,6 +3,8 @@
 #include <turtle_kv/config.hpp>
 //
 
+#include <turtle_kv/on_page_cache_overcommit.hpp>
+
 #include <turtle_kv/import/int_types.hpp>
 #include <turtle_kv/import/metrics.hpp>
 
@@ -50,6 +52,8 @@ struct KVStoreMetrics {
   StatsMetric<i64> mem_table_count_stats;
   CountMetric<i64> mem_table_log_bytes_allocated{0};
   CountMetric<i64> mem_table_log_bytes_freed{0};
+
+  OvercommitMetrics overcommit;
 
 #if TURTLE_KV_PROFILE_UPDATES
 
