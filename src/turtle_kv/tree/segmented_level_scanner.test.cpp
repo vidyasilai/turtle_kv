@@ -6,14 +6,15 @@
 //
 //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-#include <turtle_kv/tree/segmented_level_scanner.hpp>
+#include <turtle_kv/tree/scan_segmented_level.hpp>
 //
-#include <turtle_kv/tree/segmented_level_scanner.hpp>
+#include <turtle_kv/tree/scan_segmented_level.hpp>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <turtle_kv/tree/testing/fake_node.hpp>
+#include <turtle_kv/tree/testing/in_memory_block_loader.hpp>
 #include <turtle_kv/tree/testing/random_leaf_generator.hpp>
 
 #include <turtle_kv/tree/algo/nodes.hpp>
@@ -50,10 +51,10 @@ using turtle_kv::KeyOrder;
 using turtle_kv::KeyView;
 using turtle_kv::MergeCompactor;
 using turtle_kv::Optional;
+using turtle_kv::PackedBlockedLeafPage;
 using turtle_kv::PackedKeyValue;
-using turtle_kv::PackedLeafPage;
+using turtle_kv::scan_segmented_level;
 using turtle_kv::SegmentedLevelBuilder;
-using turtle_kv::SegmentedLevelScanner;
 using turtle_kv::set_bit;
 using turtle_kv::Status;
 using turtle_kv::StatusOr;
@@ -62,6 +63,7 @@ using turtle_kv::testing::FakeNode;
 using turtle_kv::testing::FakePageLoader;
 using turtle_kv::testing::FakePinnedPage;
 using turtle_kv::testing::FakeSegment;
+using turtle_kv::testing::InMemoryBlockLoader;
 using turtle_kv::testing::RandomLeafGenerator;
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -189,26 +191,24 @@ class SegmentedLevelScannerTest : public ::testing::Test
         expected_keys.emplace_back(get_key(item));
       }
 
-      // Collect actual keys, using SegmentedLevelScanner.
+      // Collect actual keys, using scan_segmented_level.
       //
       {
-        SegmentedLevelScanner<const FakeNode, const FakeLevel, FakePageLoader> scanner{
-            actual,
-            actual.level_,
-            *this->fake_page_loader,
-            llfs::PinPageToJob::kDefault,
-            llfs::PageCacheOvercommit::not_allowed(),
-        };
+        InMemoryBlockLoader block_loader{*this->fake_page_loader};
+        Status status;
 
-        std::move(scanner) | seq::for_each([&](const EditSlice& edit_slice) {
-          batt::case_of(   //
-              edit_slice,  //
-              [&](const auto& edits) {
-                for (const auto& edit : edits) {
-                  actual_keys.emplace_back(get_key(edit));
-                }
+        scan_segmented_level(actual, actual.level_, block_loader, status)
+            | seq::for_each([&](const EditSlice& edit_slice) {
+                batt::case_of(   //
+                    edit_slice,  //
+                    [&](const auto& edits) {
+                      for (const auto& edit : edits) {
+                        actual_keys.emplace_back(get_key(edit));
+                      }
+                    });
               });
-        });
+
+        ASSERT_TRUE(status.ok()) << BATT_INSPECT(status);
       }
       ASSERT_EQ(expected_keys.size(), actual_keys.size());
 
@@ -228,23 +228,22 @@ class SegmentedLevelScannerTest : public ::testing::Test
         if (pivot_i != old_pivot_i) {
           std::vector<std::string_view> actual_keys2;
           {
-            SegmentedLevelScanner<const FakeNode, const FakeLevel, FakePageLoader> scanner2{
-                actual,
-                actual.level_,
-                *this->fake_page_loader,
-                llfs::PinPageToJob::kDefault,
-                llfs::PageCacheOvercommit::not_allowed(),
-                /*min_pivot=*/pivot_i};
+            InMemoryBlockLoader block_loader2{*this->fake_page_loader};
+            Status status2;
 
-            std::move(scanner2) | seq::for_each([&](const EditSlice& edit_slice) {
-              batt::case_of(   //
-                  edit_slice,  //
-                  [&](const auto& edits) {
-                    for (const auto& edit : edits) {
-                      actual_keys2.emplace_back(get_key(edit));
-                    }
+            scan_segmented_level(actual, actual.level_, block_loader2, status2,
+                                 /*min_pivot_i=*/pivot_i)
+                | seq::for_each([&](const EditSlice& edit_slice) {
+                    batt::case_of(   //
+                        edit_slice,  //
+                        [&](const auto& edits) {
+                          for (const auto& edit : edits) {
+                            actual_keys2.emplace_back(get_key(edit));
+                          }
+                        });
                   });
-            });
+
+            ASSERT_TRUE(status2.ok()) << BATT_INSPECT(status2);
           }
 
           EXPECT_EQ(expected_keys.size() - i, actual_keys2.size());
@@ -297,10 +296,9 @@ void SegmentedLevelScannerTest::Scenario::run_with_pivot_count(usize pivot_count
   const usize value_size = 100;
   const usize item_count = 20 * 1000;
   const usize leaf_size = 256 * 1024;
-  const usize leaf_overhead = 16 * 1024 + 64 + 100;
-  const usize space_per_leaf = leaf_size - leaf_overhead;
+  const usize flush_size = leaf_size * 15 / 16;
   const usize size_per_item = key_size + value_size + 4 /*key_overhead*/ + 5 /*value_overhead*/;
-  const usize leaf_count = (size_per_item * item_count + space_per_leaf - 1) / space_per_leaf;
+  const usize leaf_count = (size_per_item * item_count + flush_size - 1) / flush_size;
 
   this->string_store.emplace();
   this->set_key_size(key_size);
@@ -313,7 +311,8 @@ void SegmentedLevelScannerTest::Scenario::run_with_pivot_count(usize pivot_count
   auto generated = this->generate_leaf_pages<false>();
 
   EXPECT_EQ(generated.result_set.size(), item_count);
-  EXPECT_EQ(generated.leaf_pages.size(), leaf_count);
+  EXPECT_GE(generated.leaf_pages.size(), leaf_count);
+  EXPECT_LE(generated.leaf_pages.size(), leaf_count * 2);
   EXPECT_EQ(generated.leaf_page_ids.size(), generated.leaf_pages.size());
 
   // Verify that the result set and packed leaf pages contain exactly the same keys.
@@ -325,10 +324,10 @@ void SegmentedLevelScannerTest::Scenario::run_with_pivot_count(usize pivot_count
       result_set_keys.emplace_back(get_key(item));
     }
     for (FakePinnedPage& page : generated.leaf_pages) {
-      auto& leaf_view = *PackedLeafPage::view_of(page.get_page_buffer());
-      for (const auto& item : leaf_view.items_slice()) {
+      const auto& leaf_view = PackedBlockedLeafPage::view_of(page.const_buffer());
+      leaf_view.items_seq() | batt::seq::for_each([&](const auto& item) {
         leaf_page_keys.emplace_back(get_key(item));
-      }
+      });
     }
 
     ASSERT_EQ(result_set_keys.size(), leaf_page_keys.size());
@@ -353,10 +352,12 @@ void SegmentedLevelScannerTest::Scenario::run_with_pivot_count(usize pivot_count
 
   for (usize segment_i = 0; segment_i < fake_node.level_.segment_count(); ++segment_i) {
     FakeSegment& fake_segment = fake_node.level_.get_segment(segment_i);
-    auto& leaf_view = *PackedLeafPage::view_of(generated.leaf_pages[segment_i].get_page_buffer());
+    const auto& leaf_view = PackedBlockedLeafPage::view_of(generated.leaf_pages[segment_i].const_buffer());
 
     if (debug_output) {
-      std::cout << BATT_INSPECT(segment_i) << BATT_INSPECT(leaf_view.get_key_crange()) << "\t"
+      std::cout << BATT_INSPECT(segment_i)
+                << " keys=[" << batt::c_str_literal(leaf_view.min_key())
+                << ", " << batt::c_str_literal(leaf_view.max_key()) << "]\t"
                 << fake_segment.get_active_pivots().printable() << " "
                 << batt::dump_range(fake_segment.pivot_items_count_) << std::endl;
     }

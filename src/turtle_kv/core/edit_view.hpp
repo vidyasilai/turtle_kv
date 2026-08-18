@@ -11,6 +11,7 @@
 #include <turtle_kv/core/item_view.hpp>
 #include <turtle_kv/core/key_view.hpp>
 #include <turtle_kv/core/packed_key_value.hpp>
+#include <turtle_kv/core/packed_key_value_slot.hpp>
 #include <turtle_kv/core/value_view.hpp>
 
 #include <turtle_kv/import/logging.hpp>
@@ -247,6 +248,20 @@ inline Optional<ItemView> to_item_view(const PackedKeyValue& kv)
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 inline EditView to_edit_view(const PackedKeyValue& kv)
+{
+  return EditView{get_key(kv), get_value(kv)};
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+inline Optional<ItemView> to_item_view(const PackedKeyValueSlotPtr& kv)
+{
+  return to_item_view(EditView{get_key(kv), get_value(kv)});
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+inline EditView to_edit_view(const PackedKeyValueSlotPtr& kv)
 {
   return EditView{get_key(kv), get_value(kv)};
 }

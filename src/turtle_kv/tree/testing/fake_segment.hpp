@@ -58,6 +58,11 @@ struct FakeSegment {
     return this->active_pivots_;
   }
 
+  const PiecewiseFilter<u32>& get_filter(const FakeLevel&) const
+  {
+    return this->filter_;
+  }
+
   bool is_pivot_active(i32 pivot_i) const
   {
     return this->active_pivots_.get(pivot_i);

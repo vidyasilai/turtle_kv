@@ -1,7 +1,8 @@
 #pragma once
 
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/testing/fake_page_loader.hpp>
 #include <turtle_kv/tree/testing/fake_pinned_page.hpp>
 
@@ -48,6 +49,12 @@ class RandomLeafGenerator
     return this->items_generator_;
   }
 
+  Self& set_block_size(usize block_size)
+  {
+    this->block_size_ = block_size;
+    return *this;
+  }
+
   template <bool kDecayToItems, typename Rng>
   Result<kDecayToItems> operator()(DecayToItem<kDecayToItems> decay_to_items,
                                    Rng& rng,
@@ -63,21 +70,17 @@ class RandomLeafGenerator
 
     batt::WorkerPool& worker_pool = batt::WorkerPool::null_pool();
 
-    constexpr u32 kTrieIndexReserveSize = 16384;
-
-    BATT_CHECK_GT(page_size, kTrieIndexReserveSize * 8);
-
-    const llfs::PageSize effective_page_size{page_size - kTrieIndexReserveSize};
+    const usize flush_size = usize(page_size) * 15 / 16;
 
     // Compute a running total of packed sizes, so we can split the result set in to leaf pages.
     //
     batt::RunningTotal running_total =
         compute_running_total(worker_pool, result.result_set, DecayToItem<kDecayToItems>{});
 
-    SplitParts page_parts = split_parts(       //
-        running_total,                         //
-        MinPartSize{effective_page_size / 4},  //
-        MaxPartSize{effective_page_size},      //
+    SplitParts page_parts = split_parts(  //
+        running_total,                    //
+        MinPartSize{flush_size / 4},      //
+        MaxPartSize{flush_size},          //
         MaxItemSize{384});
 
     for (const Interval<usize>& part_extents : page_parts) {
@@ -101,18 +104,11 @@ class RandomLeafGenerator
       //
       std::shared_ptr<llfs::PageBuffer> page_buffer = fake_pinned_page.get_page_buffer();
 
-      auto page_plan =
-          PackedLeafLayoutPlan::from_items(page_buffer->size(), page_items, kTrieIndexReserveSize);
+      StatusOr<PackedLeafResult> pack_result =
+          pack_blocked_leaf_page(this->block_size_, page_items, page_buffer->mutable_buffer());
 
-      // Build the page from the item slice assigned to it by the multi-page plan.
-      //
-      PackedLeafPage* packed_leaf_page = build_leaf_page(  //
-          page_buffer->mutable_buffer(),                   //
-          page_plan,                                       //
-          page_items                                       //
-      );
-
-      BATT_CHECK_NOT_NULLPTR(packed_leaf_page);
+      BATT_CHECK(pack_result.ok()) << BATT_INSPECT(pack_result.status());
+      BATT_CHECK_EQ(pack_result->items_packed, usize(std::end(page_items) - std::begin(page_items)));
 
       // Add the fake page and id to the result.
       //
@@ -125,6 +121,7 @@ class RandomLeafGenerator
 
  private:
   RandomResultSetGenerator items_generator_;
+  usize block_size_ = 8 * 1024;
 };
 
 }  // namespace testing

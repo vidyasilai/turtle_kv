@@ -79,6 +79,11 @@ struct InMemoryNodeSegment {
     return this->active_pivots.get(pivot_i);
   }
 
+  const PiecewiseFilter<u32>& get_filter(const InMemoryNodeSegmentedLevel&) const
+  {
+    return this->filter;
+  }
+
   template <typename Traits>
   Interval<u32> drop_key_range(const BasicInterval<Traits>& key_range,
                                const Slice<const PackedKeyValue>& items)

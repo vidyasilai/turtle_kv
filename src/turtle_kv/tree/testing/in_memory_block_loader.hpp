@@ -10,9 +10,12 @@
 
 #include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
 #include <turtle_kv/tree/leaf/packed_leaf_block.hpp>
+#include <turtle_kv/tree/testing/fake_page_loader.hpp>
 
 #include <turtle_kv/import/int_types.hpp>
 #include <turtle_kv/import/status.hpp>
+
+#include <llfs/page_id.hpp>
 
 namespace turtle_kv {
 namespace testing {
@@ -26,13 +29,33 @@ class InMemoryBlockLoader
   {
   }
 
+  explicit InMemoryBlockLoader(FakePageLoader& page_loader) noexcept
+      : leaf_{nullptr}
+      , page_loader_{&page_loader}
+  {
+  }
+
+  StatusOr<const PackedBlockedLeafPage*> set_page(llfs::PageId page_id) noexcept
+  {
+    BATT_CHECK_NOT_NULLPTR(this->page_loader_);
+
+    BATT_ASSIGN_OK_RESULT(auto pinned_page,
+                          this->page_loader_->load_page(page_id, llfs::PageLoadOptions{}));
+    this->pinned_page_ = std::move(pinned_page);
+    this->leaf_ = &PackedBlockedLeafPage::view_of(this->pinned_page_.const_buffer());
+    return this->leaf_;
+  }
+
   StatusOr<const PackedLeafBlock*> load_block(u32 block_index) noexcept
   {
+    BATT_CHECK_NOT_NULLPTR(this->leaf_);
     return &*(this->leaf_->blocks_begin() + block_index);
   }
 
  private:
   const PackedBlockedLeafPage* leaf_;
+  FakePageLoader* page_loader_ = nullptr;
+  FakePinnedPage pinned_page_;
 };
 
 }  // namespace testing

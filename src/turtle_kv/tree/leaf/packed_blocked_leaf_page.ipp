@@ -254,7 +254,7 @@ StatusOr<PackedLeafResult> pack_blocked_leaf_page(const usize block_size,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ const PackedBlockedLeafPage& PackedBlockedLeafPage::view_of(
+/*static*/ inline const PackedBlockedLeafPage& PackedBlockedLeafPage::view_of(
     const ConstBuffer& buffer) noexcept
 {
   BATT_CHECK_GT(buffer.size(), sizeof(PackedBlockedLeafPage) + sizeof(llfs::PackedPageHeader));

@@ -8,11 +8,10 @@
 
 #pragma once
 
-#include <turtle_kv/tree/packed_leaf_page.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
 
 #include <turtle_kv/import/int_types.hpp>
 
-#include <llfs/page_buffer.hpp>
 #include <llfs/page_id.hpp>
 
 #include <batteries/assert.hpp>
@@ -52,12 +51,12 @@ class SegmentedLevelBuilder
   Self& add_segment(const PinnedPageT& pinned_page)
   {
     llfs::PageId page_id = pinned_page.page_id();
-    std::shared_ptr<const llfs::PageBuffer> page_buffer = pinned_page.get_page_buffer();
     SegmentT& segment = this->level_.append_segment();
 
     // Reference the serialized leaf corresponding to this segment.
     //
-    auto& leaf_view = *PackedLeafPage::view_of(page_buffer);
+    const PackedBlockedLeafPage& leaf_view =
+          PackedBlockedLeafPage::view_of(pinned_page.const_buffer());
 
     // Initialize the segment structure.
     //

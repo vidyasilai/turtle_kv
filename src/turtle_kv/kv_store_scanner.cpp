@@ -912,6 +912,10 @@ auto KVStoreScanner::NodeScanState::pull_next(i32 buffer_level_i) -> KVSlice
           BATT_PANIC() << "Invalid EditSlice type: EditView";
           BATT_UNREACHABLE();
         },
+        [](Slice<const PackedKeyValueSlotPtr>&) {
+          BATT_PANIC() << "TODO [vsilai 2026-08-17] Revisit for blocked leaves!";
+          BATT_UNREACHABLE();
+        },
         [&](Slice<const PackedKeyValue>& kv_slice) {
           if (!kv_slice.empty()) {
             result = &kv_slice;

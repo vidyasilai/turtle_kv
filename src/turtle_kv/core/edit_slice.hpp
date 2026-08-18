@@ -2,6 +2,7 @@
 
 #include <turtle_kv/core/edit_view.hpp>
 #include <turtle_kv/core/packed_key_value.hpp>
+#include <turtle_kv/core/packed_key_value_slot.hpp>
 
 #include <turtle_kv/import/ref.hpp>
 #include <turtle_kv/import/slice.hpp>
@@ -17,9 +18,10 @@ namespace turtle_kv {
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 
-using EditSlice = std::variant<  //
-    Slice<const EditView>,       //
-    Slice<const PackedKeyValue>  //
+using EditSlice = std::variant<        //
+    Slice<const EditView>,             //
+    Slice<const PackedKeyValue>,       //
+    Slice<const PackedKeyValueSlotPtr>  //
     >;
 
 // The key of the first edit in the slice; the slice MUST be non-empty.

@@ -43,6 +43,11 @@ class FakePinnedPage
     return this->page_buffer_;
   }
 
+  llfs::ConstBuffer const_buffer() const
+  {
+    return llfs::get_const_buffer(this->page_buffer_);
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   std::shared_ptr<llfs::PageBuffer> page_buffer_;
