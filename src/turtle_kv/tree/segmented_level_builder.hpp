@@ -56,7 +56,7 @@ class SegmentedLevelBuilder
     // Reference the serialized leaf corresponding to this segment.
     //
     const PackedBlockedLeafPage& leaf_view =
-          PackedBlockedLeafPage::view_of(pinned_page.const_buffer());
+          *PackedBlockedLeafPage::view_of(pinned_page);
 
     // Initialize the segment structure.
     //

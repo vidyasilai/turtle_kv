@@ -48,10 +48,20 @@ class FakePinnedPage
     return llfs::get_const_buffer(this->page_buffer_);
   }
 
+  llfs::ConstBuffer const_payload() const
+  {
+    return this->page_buffer_->const_payload();
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   std::shared_ptr<llfs::PageBuffer> page_buffer_;
 };
+
+inline llfs::ConstBuffer get_page_const_payload(const FakePinnedPage& page) noexcept
+{
+  return page.const_payload();
+}
 
 }  // namespace testing
 }  // namespace turtle_kv

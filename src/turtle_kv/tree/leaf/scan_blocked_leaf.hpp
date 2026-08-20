@@ -9,6 +9,7 @@
 #pragma once
 #define TURTLE_KV_TREE_LEAF_SCAN_BLOCKED_LEAF_HPP
 
+#include "blocked_leaf_page_loader.concept.hpp"
 #include "packed_blocked_leaf_page.hpp"
 #include "packed_blocked_leaf_page.sharded_live_ranges.hpp"
 #include "packed_blocked_leaf_page.sharded_live_ranges.ipp"
@@ -24,7 +25,7 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <PiecewiseFilterStorageModel<u32> FilterModelT, typename BlockLoaderT>
+template <PiecewiseFilterStorageModel<u32> FilterModelT, BlockedLeafPageLoader BlockLoaderT>
 auto scan_blocked_leaf(const PackedBlockedLeafPage* packed_leaf,
                        BlockLoaderT* block_loader,
                        const BasicPiecewiseFilter<u32, FilterModelT>& filter,

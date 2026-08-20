@@ -22,14 +22,14 @@ namespace testing {
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
-class InMemoryBlockLoader
+class FakeBlockedLeafPageLoader
 {
  public:
-  explicit InMemoryBlockLoader(const PackedBlockedLeafPage* leaf) noexcept : leaf_{leaf}
+  explicit FakeBlockedLeafPageLoader(const PackedBlockedLeafPage* leaf) noexcept : leaf_{leaf}
   {
   }
 
-  explicit InMemoryBlockLoader(FakePageLoader& page_loader) noexcept
+  explicit FakeBlockedLeafPageLoader(FakePageLoader& page_loader) noexcept
       : leaf_{nullptr}
       , page_loader_{&page_loader}
   {
@@ -42,7 +42,7 @@ class InMemoryBlockLoader
     BATT_ASSIGN_OK_RESULT(auto pinned_page,
                           this->page_loader_->load_page(page_id, llfs::PageLoadOptions{}));
     this->pinned_page_ = std::move(pinned_page);
-    this->leaf_ = &PackedBlockedLeafPage::view_of(this->pinned_page_.const_buffer());
+    this->leaf_ = PackedBlockedLeafPage::view_of(this->pinned_page_);
     return this->leaf_;
   }
 

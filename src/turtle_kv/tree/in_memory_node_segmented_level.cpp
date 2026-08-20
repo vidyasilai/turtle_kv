@@ -293,7 +293,7 @@ bool InMemoryNodeSegmentedLevel::set_pivot_items_flushed(const InMemoryNode& nod
 {
   segment_load_status.Update(
       in_segmented_level(node, *this, update_context.page_loader, update_context.overcommit)
-          .drop_key_range(pivot_i, flush_key_crange.upper_bound));
+          .drop_key_range<PackedLeafPage>(pivot_i, flush_key_crange.upper_bound));
 
   return this->empty();
 }

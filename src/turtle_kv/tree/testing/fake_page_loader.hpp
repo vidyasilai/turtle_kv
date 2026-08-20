@@ -21,6 +21,7 @@ namespace testing {
 class FakePageLoader : public llfs::BasicPageLoader<FakePinnedPage>
 {
  public:
+  using PinnedPageT = FakePinnedPage;
   explicit FakePageLoader(llfs::PageSize page_size) noexcept : page_size_{page_size}
   {
   }

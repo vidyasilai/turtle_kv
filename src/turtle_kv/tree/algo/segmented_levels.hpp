@@ -2,7 +2,7 @@
 
 #include <turtle_kv/tree/algo/nodes.hpp>
 #include <turtle_kv/tree/algo/segments.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
 #include <turtle_kv/tree/segmented_level_scanner.hpp>
 
 #include <turtle_kv/import/bit_ops.hpp>
@@ -163,6 +163,7 @@ struct SegmentedLevelAlgorithms {
 
   /** \brief Filters out the key range in each segment in this level.
    */
+  template <typename LeafPageT>
   Status drop_key_range(usize pivot_i, const KeyView& max_key)
   {
     static_assert(node_available());
@@ -186,10 +187,18 @@ struct SegmentedLevelAlgorithms {
                                                    llfs::PinPageToJob::kDefault,
                                                    this->overcommit_));
 
-      const PackedLeafPage& leaf = *PackedLeafPage::view_of(pinned_page.get_page_buffer());
+      const LeafPageT& leaf = *LeafPageT::view_of(pinned_page);
 
-      CInterval<KeyView> flush_key_crange{pivot_lower_bound_key, max_key};
-      Interval<u32> dropped_interval = segment.drop_key_range(flush_key_crange, leaf.items_slice());
+      auto drop_begin = leaf.lower_bound(pivot_lower_bound_key);
+      auto drop_end = leaf.lower_bound(max_key);
+      while (drop_end != leaf.items_end() && get_key(*drop_end) <= max_key) {
+        ++drop_end;
+      }
+
+      u32 begin_i = BATT_CHECKED_CAST(u32, std::distance(leaf.items_begin(), drop_begin));
+      u32 end_i = BATT_CHECKED_CAST(u32, std::distance(leaf.items_begin(), drop_end));
+
+      Interval<u32> dropped_interval = segment.drop_index_range(Interval<u32>{begin_i, end_i});
 
       auto pivot_last = leaf.lower_bound(pivot_upper_bound_key);
       usize pivot_last_i = std::distance(leaf.items_begin(), pivot_last);

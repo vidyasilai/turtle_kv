@@ -91,9 +91,9 @@ struct InMemoryNodeSegment {
     return drop_item_range(this->filter, items, key_range, llfs::KeyRangeOrder{});
   }
 
-  void drop_index_range(Interval<u32> i)
+  Interval<u32> drop_index_range(Interval<u32> i)
   {
-    this->filter.drop_index_range(i);
+    return this->filter.drop_index_range(i);
   }
 
   bool is_index_filtered(const InMemoryNodeSegmentedLevel&, u32 index) const
