@@ -309,7 +309,7 @@ struct PackedBlockedLeafPage  //
       const Interval<LeafItemIndex>& subrange) const noexcept;
 
   Interval<LeafItemIndex> get_block_aligned_index_range_for_key_range(
-      const Interval<KeyView>& key_range) const noexcept;
+      KeyView lower_bound, Optional<KeyView> upper_bound = None) const noexcept;
 
   Slice<const PackedKeyValueSlotPtr> get_slice_within_block(
       u32 block_index,
@@ -364,5 +364,31 @@ class PackedBlockedLeafPage::HeaderShardView
   const PackedBlockedLeafPage* leaf_;
   usize header_shard_size_;
 };
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+llfs::PageLayoutId packed_blocked_leaf_page_layout_id();
+
+StatusOr<llfs::PinnedPage> pin_blocked_leaf_page_to_job(
+    llfs::PageCacheJob& page_job,
+    std::shared_ptr<llfs::PageBuffer>&& page_buffer);
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+template <typename ItemsRangeT>
+auto build_blocked_leaf_page_in_job(usize block_size,
+                                    llfs::PageBuffer& page_buffer,
+                                    const ItemsRangeT& items)
+{
+  StatusOr<PackedLeafResult> result =
+      pack_blocked_leaf_page(block_size, items, page_buffer.mutable_buffer());
+
+  BATT_CHECK(result.ok()) << BATT_INSPECT(result.status());
+  BATT_CHECK_EQ(result->items_packed, usize(std::end(items) - std::begin(items)));
+
+  return [](llfs::PageCacheJob& page_job, std::shared_ptr<llfs::PageBuffer>&& page_buffer) {
+    return pin_blocked_leaf_page_to_job(page_job, std::move(page_buffer));
+  };
+}
 
 }  // namespace turtle_kv

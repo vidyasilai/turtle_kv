@@ -12,6 +12,7 @@
 #include <turtle_kv/tree/algo/nodes.hpp>
 #include <turtle_kv/tree/filter_builder.hpp>
 #include <turtle_kv/tree/in_memory_node.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 
 #include <turtle_kv/core/algo/split_parts.hpp>
@@ -147,7 +148,7 @@ StatusOr<usize> InMemoryNodeMergedLevel::start_serialize(const InMemoryNode& nod
         TreeSerializeContext::BuildPageJobId id,
         context.async_build_page(
             context.tree_options().leaf_size(),
-            packed_leaf_page_layout_id(),
+            packed_blocked_leaf_page_layout_id(),
             llfs::LruPriority{kNewLeafLruPriority},
             /*task_count=*/2,
             [this,
@@ -162,9 +163,9 @@ StatusOr<usize> InMemoryNodeMergedLevel::start_serialize(const InMemoryNode& nod
               const auto items_in_this_page = batt::slice_range(all_items_in_level, part_extents);
 
               if (args.task_i == 0) {
-                return build_leaf_page_in_job(node.tree_options.trie_index_reserve_size(),
-                                              args.page_buffer,
-                                              items_in_this_page);
+                return build_blocked_leaf_page_in_job(node.tree_options.block_size(),
+                                                      args.page_buffer,
+                                                      items_in_this_page);
               }
               BATT_CHECK_EQ(args.task_i, 1);
 
@@ -209,12 +210,12 @@ StatusOr<InMemoryNodeSegmentedLevel> InMemoryNodeMergedLevel::finish_serialize(
     segment.page_id_slot.page_id = pinned_leaf_page.page_id();
     segment.active_pivots.clear();
 
-    const PackedLeafPage& leaf_page = *PackedLeafPage::view_of(pinned_leaf_page);
+    const PackedBlockedLeafPage& leaf_page = *PackedBlockedLeafPage::view_of(pinned_leaf_page);
 
     for (usize pivot_i = 0; pivot_i < pivot_count; ++pivot_i) {
       const Interval<KeyView> pivot_key_range = in_node(node).get_pivot_key_range(pivot_i);
 
-      const Interval<const PackedKeyValue*> pivot_range_in_leaf{
+      const Interval<PackedBlockedLeafPage::ItemIterator> pivot_range_in_leaf{
           .lower_bound = leaf_page.lower_bound(pivot_key_range.lower_bound),
           .upper_bound = leaf_page.lower_bound(pivot_key_range.upper_bound),
       };

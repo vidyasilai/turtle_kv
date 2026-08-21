@@ -22,6 +22,7 @@
 #include <llfs/varint.hpp>
 
 #include <batteries/assert.hpp>
+#include <batteries/bit_ops/bit_count.hpp>
 #include <batteries/checked_cast.hpp>
 #include <batteries/env.hpp>
 
@@ -311,7 +312,7 @@ class TreeOptions
 
   usize flush_size() const
   {
-    return this->leaf_data_size() - this->trie_index_reserve_size();
+    return this->leaf_size() * 15 / 16;
   }
 
   //----- --- -- -  -  -   -
@@ -360,6 +361,20 @@ class TreeOptions
     constexpr usize kPackedPageRefSizeEstimate = sizeof(u64) * 2;
 
     return llfs::MaxRefsPerPage{this->leaf_size() / kPackedPageRefSizeEstimate};
+  }
+
+  //----- --- -- -  -  -   -
+
+  usize block_size() const
+  {
+    return this->block_size_;
+  }
+
+  Self& set_block_size(u32 size)
+  {
+    BATT_CHECK_EQ(batt::bit_count(size), 1u) << "block_size must be a power of 2";
+    this->block_size_ = size;
+    return *this;
   }
 
   //----- --- -- -  -  -   -
@@ -422,6 +437,10 @@ class TreeOptions
   IsSizeTiered size_tiered_{false};
 
   bool b_tree_mode_{false};
+
+  // The block size for blocked leaf pages (must be a power of 2).
+  //
+  u32 block_size_ = 8 * kKiB;
 };
 
 }  // namespace turtle_kv

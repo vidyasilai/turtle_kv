@@ -17,13 +17,12 @@
 #include <turtle_kv/import/int_types.hpp>
 
 #include <turtle_kv/tree/algo/nodes.hpp>
+#include <turtle_kv/tree/leaf/blocked_leaf_page_loader.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/node_page_view.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/packed_node_page.hpp>
-#include <turtle_kv/tree/segmented_level_scanner.hpp>
-#include <turtle_kv/tree/sharded_leaf_page_scanner.hpp>
-#include <turtle_kv/tree/sharded_level_scanner.hpp>
+#include <turtle_kv/tree/scan_segmented_level.hpp>
 #include <turtle_kv/tree/subtree.hpp>
 
 #include <turtle_kv/util/stack_merger.hpp>
@@ -74,9 +73,6 @@ class KVStoreScanner
     LatencyMetric scan_level_advance_latency;
     FastCountMetric<usize> scan_level_advance_count;
 
-    LatencyMetric pull_next_sharded_latency;
-    FastCountMetric<usize> pull_next_sharded_count;
-
     FastCountMetric<usize> full_leaf_attempts;
     FastCountMetric<usize> full_leaf_success;
   };
@@ -89,15 +85,9 @@ class KVStoreScanner
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  using KVSlice = Slice<const PackedKeyValue>;
+  using KVSlice = Slice<const PackedKeyValueSlotPtr>;
 
   using PackedLevel = PackedNodePage::UpdateBuffer::SegmentedLevel;
-
-  using PackedLevelScanner =
-      SegmentedLevelScanner<const PackedNodePage, const PackedLevel, llfs::PageLoader>;
-
-  using PackedLevelShardedScanner =
-      ShardedLevelScanner<const PackedNodePage, const PackedLevel, llfs::PageLoader>;
 
   struct NodeScanState;
 
@@ -124,23 +114,16 @@ class KVStoreScanner
     i32 buffer_level_i;
   };
 
-  struct TreeLevelScanShardedState {
-    ShardedKeyValueSlice kv_slice;
+  struct FullLeafScanState {
+    KVSlice kv_slice;
     NodeScanState* node_state;
-    i32 buffer_level_i;
+    PackedBlockedLeafPage::BlockIterator block_iter;
+    PackedBlockedLeafPage::BlockIterator block_end;
   };
 
-  struct ShardedLeafScanState {
-    NodeScanState* node_state_;
-    ShardedLeafPageScanner* leaf_scanner_;
-
-    template <typename... Args>
-    explicit ShardedLeafScanState(NodeScanState* node_state,
-                                  ShardedLeafPageScanner* leaf_scanner) noexcept
-        : node_state_{node_state}
-        , leaf_scanner_{leaf_scanner}
-    {
-    }
+  struct BlockedLeafScanState {
+    KVSlice kv_slice;
+    NodeScanState* node_state;
   };
 
   struct ActiveMemTableTag {
@@ -155,9 +138,6 @@ class KVStoreScanner
   struct DeltaMemTableValueTag {
   };
 
-  struct ShardedLeafTag {
-  };
-
   //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
   //
   struct ScanLevel {
@@ -168,17 +148,27 @@ class KVStoreScanner
                  MemTableValueScanState<artc::ARTBase::Synchronized::kFalse>,
                  Slice<const EditView>,
                  TreeLevelScanState,
-                 TreeLevelScanShardedState,
-                 ShardedLeafScanState>
+                 FullLeafScanState,
+                 BlockedLeafScanState>
         state_impl;
 
     //----- --- -- -  -  -   -
 
-    explicit ScanLevel(const KVSlice& kv_slice, NodeScanState* frame, i32 buffer_level_i) noexcept;
-
-    explicit ScanLevel(const ShardedKeyValueSlice& kv_slice,
+    explicit ScanLevel(const KVSlice& kv_slice,
                        NodeScanState* frame,
                        i32 buffer_level_i) noexcept;
+
+    explicit ScanLevel(const KVSlice& kv_slice,
+                       NodeScanState* node_state,
+                       PackedBlockedLeafPage::BlockIterator leaf_block_iter,
+                       PackedBlockedLeafPage::BlockIterator leaf_block_end) noexcept;
+
+    struct BlockedLeafTag {
+    };
+
+    explicit ScanLevel(BlockedLeafTag,
+                       const KVSlice& kv_slice,
+                       NodeScanState* node_state) noexcept;
 
     explicit ScanLevel(
         ActiveMemTableValueTag,
@@ -191,10 +181,6 @@ class KVStoreScanner
                                                /*kValuesOnly=*/true>& art_scanner) noexcept;
 
     explicit ScanLevel(const Slice<const EditView>& edit_view_slice) noexcept;
-
-    explicit ScanLevel(ShardedLeafTag,
-                       NodeScanState* node_state,
-                       ShardedLeafPageScanner* leaf_scanner) noexcept;
 
     //----- --- -- -  -  -   -
 
@@ -227,17 +213,17 @@ class KVStoreScanner
   //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
   //
   struct NodeScanState {
-    using LevelVector = boost::container::static_vector<PackedLevelScanner, kMaxUpdateBufferLevels>;
-
-    using ShardedLevelVector =
-        boost::container::static_vector<PackedLevelShardedScanner, kMaxUpdateBufferLevels>;
+    using LevelSeqVector =
+        boost::container::static_vector<BoxedSeq<EditSlice>, kMaxUpdateBufferLevels>;
 
     u64 active_levels_;
     llfs::PinnedPage pinned_page_;
     const PackedNodePage* node_;
     i32 pivot_i_;
     boost::container::static_vector<PackedLevel, kMaxUpdateBufferLevels> levels_;
-    std::variant<LevelVector, ShardedLevelVector> level_scanners_;
+    LevelSeqVector level_seqs_;
+    Status scan_status_;
+    PiecewiseFilter<u32> leaf_filter_;
 
     //----- --- -- -  -  -   -
 
@@ -249,13 +235,20 @@ class KVStoreScanner
                            const PackedNodePage& node,
                            std::integral_constant<bool, kInsertHeap>) noexcept;
 
-    // PackedLeafPage frame
+    // PackedBlockedLeafPage frame (full leaf pinned in memory)
     //
     template <bool kInsertHeap>
     explicit NodeScanState(KVStoreScanner& kv_scanner,
                            llfs::PinnedPage&& page,
-                           const PackedLeafPage& leaf,
+                           const PackedBlockedLeafPage& leaf,
                            std::integral_constant<bool, kInsertHeap>) noexcept;
+
+    // Sharded leaf frame (leaf loaded on demand via BlockedLeafPageLoader)
+    //
+    template <bool kInsertHeap>
+    explicit NodeScanState(KVStoreScanner& kv_scanner,
+                           llfs::PageId page_id,
+                           std::integral_constant<bool, kInsertHeap>);
 
     // Generic frame; initialization will be done post construction.
     //
@@ -263,18 +256,9 @@ class KVStoreScanner
 
     //----- --- -- -  -  -   -
 
-    // We need to initialize the scan state post initio in this case.
-    //
-    template <bool kInsertHeap>
-    Status initialize_sharded_leaf_scanner(KVStoreScanner& kv_scanner,
-                                           llfs::PageId page_id,
-                                           std::integral_constant<bool, kInsertHeap>);
-
     i32 get_height() const;
 
-    KVSlice pull_next(i32 buffer_level_i);
-
-    ShardedKeyValueSlice pull_next_sharded(i32 buffer_level_i);
+    SlotSlice pull_next(i32 buffer_level_i);
 
     void deactivate(i32 buffer_level_i);
   };
@@ -291,8 +275,8 @@ class KVStoreScanner
                           const llfs::PageIdSlot& root,
                           i32 tree_height,
                           const KeyView& min_key,
-                          llfs::PageSize trie_index_sharded_view_size,
-                          PageSliceStorage* slice_storage) noexcept;
+                          PageSliceStorage* slice_storage,
+                          usize block_size) noexcept;
 
   ~KVStoreScanner() noexcept;
 
@@ -341,7 +325,6 @@ class KVStoreScanner
   llfs::PageLoader& page_loader_;
   PageSliceStorage* slice_storage_;
   llfs::PageIdSlot root_;
-  llfs::PageSize trie_index_sharded_view_size_;
   i32 tree_height_;
   KeyView min_key_;
   bool needs_resume_;
@@ -356,7 +339,7 @@ class KVStoreScanner
   boost::container::static_vector<NodeScanState, kMaxTreeHeight - 1> tree_scan_path_;
   boost::container::small_vector<ScanLevel, kMaxHeapSize + 32> scan_levels_;
   StackMerger<ScanLevel, ScanLevelMinHeapOrder, kMaxHeapSize> heap_;
-  Optional<ShardedLeafPageScanner> sharded_leaf_scanner_;
+  BlockedLeafPageLoader block_loader_;
 };
 
 }  // namespace turtle_kv

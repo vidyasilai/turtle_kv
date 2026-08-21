@@ -679,7 +679,7 @@ Status InMemoryNode::split_child(BatchUpdateContext& update_context, i32 pivot_i
                                     segmented_level,
                                     update_context.page_loader,
                                     update_context.overcommit)  //
-              .split_pivot(pivot_i, pivot_key_range, sibling_min_key);
+              .split_pivot<PackedBlockedLeafPage>(pivot_i, pivot_key_range, sibling_min_key);
         },
         [&](HybridLevel& hybrid_level) -> Status {
           return hybrid_level.split_pivot(*this,

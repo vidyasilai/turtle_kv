@@ -226,6 +226,7 @@ struct SegmentedLevelAlgorithms {
    * \param old_pivot_key_range The key range of the pivot prior to the split
    * \param split_key The minimum actual key in the upper half of the split
    */
+  template <typename LeafPageT>
   Status split_pivot(i32 pivot_i,
                      const Interval<KeyView>& old_pivot_key_range,
                      const KeyView& split_key)
@@ -262,7 +263,7 @@ struct SegmentedLevelAlgorithms {
                                                    llfs::PinPageToJob::kFalse,
                                                    this->overcommit_));
 
-      const PackedLeafPage& leaf_page = *PackedLeafPage::view_of(segment_pinned_leaf);
+      const auto& leaf_page = *LeafPageT::view_of(segment_pinned_leaf);
 
       const auto first_item_in_leaf = leaf_page.items_begin();
 

@@ -201,8 +201,8 @@ void perform_range_scan(Table& expected_table,
       BATT_OK_RESULT_OR_PANIC(root_ptr->get_height(page_loader,  //
                                                    llfs::PageCacheOvercommit::not_allowed())),
       min_key,
-      tree_options.trie_index_sharded_view_size(),
-      &page_slice_storage};
+      &page_slice_storage,
+      tree_options.block_size()};
 
   usize n_read = 0;
   {

@@ -58,7 +58,7 @@ HybridLevel::SubLevel* InMemoryNodeHybridLevel::back()
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 void InMemoryNodeHybridLevel::add_new_sub_level(HybridLevel::SubLevel&& level,
-                                                 usize push_pivot_count)
+                                                usize push_pivot_count)
 {
   if (push_pivot_count) {
     BATT_CHECK(batt::is_case<SegmentedLevel>(level));
@@ -242,11 +242,12 @@ Status InMemoryNodeHybridLevel::split_pivot(InMemoryNode& node,
   for (auto& sub_level : this->sub_levels) {
     if (batt::is_case<SegmentedLevel>(sub_level)) {
       SegmentedLevel& segmented_sub_level = std::get<SegmentedLevel>(sub_level);
-      BATT_REQUIRE_OK(in_segmented_level(node,
-                                         segmented_sub_level,
-                                         update_context.page_loader,
-                                         update_context.overcommit)  //
-                          .split_pivot(pivot_i, pivot_key_range, sibling_min_key));
+      BATT_REQUIRE_OK(
+          in_segmented_level(node,
+                             segmented_sub_level,
+                             update_context.page_loader,
+                             update_context.overcommit)  //
+              .split_pivot<PackedBlockedLeafPage>(pivot_i, pivot_key_range, sibling_min_key));
     }
   }
 
@@ -318,8 +319,8 @@ void InMemoryNodeHybridLevel::deduplicate_and_add_sub_level(T&& right_level, usi
     // If `right_level` is also a HybridLevel, we will attempt deduplication if the first sub level
     // is a SegmentedLevel.
     //
-    attempt_deduplication = attempt_deduplication  &&
-        batt::is_case<SegmentedLevel>(*right_level.front());
+    attempt_deduplication =
+        attempt_deduplication && batt::is_case<SegmentedLevel>(*right_level.front());
   }
 
   if (attempt_deduplication) {

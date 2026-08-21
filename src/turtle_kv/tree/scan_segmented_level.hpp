@@ -66,7 +66,8 @@ auto scan_segmented_level(const NodeT& node,
       std::declval<const PackedBlockedLeafPage*>(),
       std::declval<BlockLoaderT*>(),
       std::declval<const typename LevelT::Segment&>().get_filter(std::declval<const LevelT&>()),
-      std::declval<Interval<KeyView>>()));
+      std::declval<KeyView>(),
+      std::declval<Optional<KeyView>>()));
 
   return batt::as_seq(boost::irange<usize>(0, level.segment_count())) |
          seq::filter_map([&node, &level, &block_loader, &status, min_pivot_i, min_key](
@@ -110,7 +111,8 @@ auto scan_segmented_level(const NodeT& node,
            return scan_blocked_leaf(*leaf,
                                     &block_loader,
                                     segment.get_filter(level),
-                                    Interval<KeyView>{lower_bound, upper_bound});
+                                    lower_bound,
+                                    upper_bound);
          }) |
          seq::flatten() | seq::status_ok() |
          seq::map([](Slice<const PackedKeyValueSlotPtr> slice) -> EditSlice {

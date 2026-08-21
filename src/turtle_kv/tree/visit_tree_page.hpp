@@ -8,9 +8,9 @@
 
 #pragma once
 
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/node_page_view.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/packed_node_page.hpp>
 
 #include <turtle_kv/import/small_vec.hpp>
@@ -31,8 +31,9 @@ namespace turtle_kv {
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <
-    typename VisitorFn /*= StatusOr<R> (const PackedLeafPage& | const PackedNodePage&) */,
-    typename R = StatusOr<RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedLeafPage&>>>>
+    typename VisitorFn /*= StatusOr<R> (const PackedBlockedLeafPage& | const PackedNodePage&) */,
+    typename R =
+        StatusOr<RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedBlockedLeafPage&>>>>
 StatusOr<R> visit_tree_page(llfs::PageLoader& page_loader,
                             llfs::PinnedPage& pinned_page_out,
                             const llfs::PageIdSlot& page_id_slot,
@@ -53,7 +54,7 @@ StatusOr<R> visit_tree_page(llfs::PageLoader& page_loader,
       *static_cast<const llfs::PackedPageHeader*>(pinned_page_out.const_buffer().data());
 
   if (page_header.layout_id == LeafPageView::page_layout_id()) {
-    return BATT_FORWARD(visitor_fn)(*PackedLeafPage::view_of(pinned_page_out));
+    return BATT_FORWARD(visitor_fn)(*PackedBlockedLeafPage::view_of(pinned_page_out));
 
   } else if (page_header.layout_id == NodePageView::page_layout_id()) {
     return BATT_FORWARD(visitor_fn)(PackedNodePage::view_of(pinned_page_out));
@@ -65,9 +66,9 @@ StatusOr<R> visit_tree_page(llfs::PageLoader& page_loader,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <
-    typename VisitorFn,
-    typename R = StatusOr<RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedLeafPage&>>>>
+template <typename VisitorFn,
+          typename R = StatusOr<
+              RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedBlockedLeafPage&>>>>
 StatusOr<R> visit_tree_page(llfs::PageLoader& page_loader,
                             const llfs::PageIdSlot& page_id_slot,
                             llfs::PageCacheOvercommit& overcommit,
@@ -114,9 +115,9 @@ decltype(auto) visit_tree_page(llfs::PageLoader& page_loader,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <
-    typename VisitorFn,
-    typename R = StatusOr<RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedLeafPage&>>>>
+template <typename VisitorFn,
+          typename R = StatusOr<
+              RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedBlockedLeafPage&>>>>
 StatusOr<R> visit_leaf_page(llfs::PageLoader& page_loader,
                             llfs::PinnedPage& pinned_page_out,
                             const llfs::PageIdSlot& page_id_slot,
@@ -134,14 +135,14 @@ StatusOr<R> visit_leaf_page(llfs::PageLoader& page_loader,
                                                         overcommit,
                                                     }));
   }
-  return BATT_FORWARD(visitor_fn)(*PackedLeafPage::view_of(pinned_page_out));
+  return BATT_FORWARD(visitor_fn)(*PackedBlockedLeafPage::view_of(pinned_page_out));
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <
-    typename VisitorFn,
-    typename R = StatusOr<RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedLeafPage&>>>>
+template <typename VisitorFn,
+          typename R = StatusOr<
+              RemoveStatusOr<std::invoke_result_t<VisitorFn, const PackedBlockedLeafPage&>>>>
 StatusOr<R> visit_leaf_page(llfs::PageLoader& page_loader,
                             const llfs::PageIdSlot& page_id_slot,
                             llfs::PageCacheOvercommit& overcommit,

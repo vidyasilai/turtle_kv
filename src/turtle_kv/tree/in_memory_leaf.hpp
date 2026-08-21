@@ -1,7 +1,7 @@
 #pragma once
 
 #include <turtle_kv/tree/batch_update.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
 #include <turtle_kv/tree/subtree_viability.hpp>
 #include <turtle_kv/tree/tree_options.hpp>
 #include <turtle_kv/tree/tree_serialize_context.hpp>
@@ -43,7 +43,7 @@ struct InMemoryLeaf {
 
   static std::unique_ptr<InMemoryLeaf> unpack(llfs::PinnedPage&& pinned_leaf_page,
                                               const TreeOptions& tree_options,
-                                              const PackedLeafPage& packed_leaf,
+                                              const PackedBlockedLeafPage& packed_leaf,
                                               batt::WorkerPool& worker_pool) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -

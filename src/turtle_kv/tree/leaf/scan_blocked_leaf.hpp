@@ -29,17 +29,18 @@ template <PiecewiseFilterStorageModel<u32> FilterModelT, BlockedLeafPageLoader B
 auto scan_blocked_leaf(const PackedBlockedLeafPage* packed_leaf,
                        BlockLoaderT* block_loader,
                        const BasicPiecewiseFilter<u32, FilterModelT>& filter,
-                       const Interval<KeyView>& key_range) noexcept
+                       KeyView lower_bound,
+                       Optional<KeyView> upper_bound = None) noexcept
 {
   BATT_CHECK_NOT_NULLPTR(packed_leaf);
 
   const Interval<LeafItemIndex> aligned_index_range =
-      packed_leaf->get_block_aligned_index_range_for_key_range(key_range);
+      packed_leaf->get_block_aligned_index_range_for_key_range(lower_bound, upper_bound);
 
   return packed_leaf->sharded_live_ranges(filter, aligned_index_range)  //
          |
          batt::seq::filter_map(
-             [packed_leaf, block_loader, key_range](
+             [packed_leaf, block_loader, lower_bound, upper_bound](
                  const typename PackedBlockedLeafPage::ShardedLiveRanges<FilterModelT>::Item& item)
                  -> Optional<StatusOr<Slice<const PackedKeyValueSlotPtr>>> {
                if (item.live_item_range.empty()) {
@@ -61,10 +62,10 @@ auto scan_blocked_leaf(const PackedBlockedLeafPage* packed_leaf,
                  const auto* end = slice.end();
 
                  if (item.is_first_block) {
-                   begin = std::lower_bound(begin, end, key_range.lower_bound, llfs::KeyOrder{});
+                   begin = std::lower_bound(begin, end, lower_bound, llfs::KeyOrder{});
                  }
-                 if (item.is_last_block) {
-                   end = std::lower_bound(begin, end, key_range.upper_bound, llfs::KeyOrder{});
+                 if (item.is_last_block && upper_bound) {
+                   end = std::lower_bound(begin, end, *upper_bound, llfs::KeyOrder{});
                  }
 
                  if (begin == end) {

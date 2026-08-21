@@ -10,8 +10,8 @@
 //
 
 #include <turtle_kv/tree/filter_builder.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/the_key.hpp>
 
 #include <batteries/algo/parallel_transform.hpp>
@@ -25,15 +25,14 @@ namespace turtle_kv {
 /*static*/ std::unique_ptr<InMemoryLeaf> InMemoryLeaf::unpack(
     llfs::PinnedPage&& pinned_leaf_page,
     const TreeOptions& tree_options,
-    const PackedLeafPage& packed_leaf,
+    const PackedBlockedLeafPage& packed_leaf,
     batt::WorkerPool& worker_pool) noexcept
 {
   std::unique_ptr<InMemoryLeaf> new_leaf =
       std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_leaf_page), tree_options);
 
-  Slice<const PackedKeyValue> packed_items = packed_leaf.items_slice();
   std::vector<EditView> buffer;
-  buffer.reserve(packed_items.size());
+  buffer.reserve(packed_leaf.items_count());
 
   {
     batt::ScopedWorkContext context{worker_pool};
@@ -43,10 +42,10 @@ namespace turtle_kv {
 
     batt::parallel_transform(
         context,
-        packed_items.begin(),
-        packed_items.end(),
+        packed_leaf.items_begin(),
+        packed_leaf.items_end(),
         buffer.data(),
-        [](const PackedKeyValue& pkv) -> EditView {
+        [](const PackedKeyValueSlotPtr& pkv) -> EditView {
           return to_edit_view(pkv);
         },
         /*min_task_size = */ algo_defaults.copy_edits.min_task_size,
@@ -254,10 +253,11 @@ Status InMemoryLeaf::apply_batch_update(BatchUpdate& update) noexcept
   Optional<BoxedSeq<EditSlice>> current_edits = None;
 
   if (this->pinned_leaf_page_ && !this->result_set) {
-    // In this case, we have initialized a new InMemoryLeaf from a PackedLeaf. Use the
-    // items from the PackedLeaf to merge with the incoming update.
+    // In this case, we have initialized a new InMemoryLeaf from a PackedBlockedLeaf. Use the
+    // items from the PackedBlockedLeaf to merge with the incoming update.
     //
-    const PackedLeafPage& packed_leaf = *PackedLeafPage::view_of(this->pinned_leaf_page_);
+    const PackedBlockedLeafPage& packed_leaf =
+        *PackedBlockedLeafPage::view_of(this->pinned_leaf_page_);
     current_edits = packed_leaf.as_edit_slice_seq();
 
   } else if (this->result_set) {
@@ -309,7 +309,7 @@ Status InMemoryLeaf::start_serialize(TreeSerializeContext& context)
       const u64 future_id,
       context.async_build_page(
           this->tree_options.leaf_size(),
-          packed_leaf_page_layout_id(),
+          packed_blocked_leaf_page_layout_id(),
           llfs::LruPriority{kNewLeafLruPriority},
           /*task_count=*/2,
           [this, filter_bits_per_key, filter_page_size, overcommit_triggered](
@@ -317,9 +317,9 @@ Status InMemoryLeaf::start_serialize(TreeSerializeContext& context)
               -> StatusOr<TreeSerializeContext::PinPageToJobFn>  //
           {
             if (args.task_i == 0) {
-              return build_leaf_page_in_job(this->tree_options.trie_index_reserve_size(),
-                                            args.page_buffer,
-                                            this->result_set->get());
+              return build_blocked_leaf_page_in_job(this->tree_options.block_size(),
+                                                    args.page_buffer,
+                                                    this->result_set->get());
             }
             BATT_CHECK_EQ(args.task_i, 1);
 

@@ -1,6 +1,14 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #pragma once
 
-#include <turtle_kv/tree/packed_leaf_page.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
 
 #include <turtle_kv/core/key_view.hpp>
 
@@ -23,22 +31,12 @@ namespace turtle_kv {
 class LeafPageView : public llfs::PageView
 {
  public:
-  /** \brief The page layout id for all instances of this class.
-   */
   static llfs::PageLayoutId page_layout_id();
 
-  /** \brief Returns the PageReader for this layout.
-   */
   static llfs::PageReader page_reader();
 
-  /** \brief Registers this page layout with the passed cache, so that pages using the layout can be
-   * correctly loaded and parsed by the PageCache.
-   */
   static Status register_layout(llfs::PageCache& cache);
 
-  /** \brief Returns true iff the passed page is valid and its header specifies layout
-   * LeafPageView::page_layout_id().
-   */
   static bool layout_used_by_page(const llfs::PinnedPage& pinned_page);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -63,14 +61,14 @@ class LeafPageView : public llfs::PageView
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  const PackedLeafPage& packed_leaf_page() const
+  const PackedBlockedLeafPage& packed_leaf_page() const
   {
     return *this->packed_leaf_page_;
   }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
-  const PackedLeafPage* packed_leaf_page_;
+  const PackedBlockedLeafPage* packed_leaf_page_;
 };
 
 }  // namespace turtle_kv

@@ -35,8 +35,7 @@ namespace turtle_kv {
 //
 /*static*/ batt::Status LeafPageView::register_layout(llfs::PageCache& cache)
 {
-  LOG_FIRST_N(INFO, 1) << "Registering page layout: " << LeafPageView::page_layout_id() << ";"
-                       << BATT_INSPECT(TURTLE_KV_PACK_KEYS_TOGETHER);
+  LOG_FIRST_N(INFO, 1) << "Registering page layout: " << LeafPageView::page_layout_id();
   return cache.register_page_reader(LeafPageView::page_layout_id(),
                                     __FILE__,
                                     __LINE__,
@@ -56,7 +55,7 @@ namespace turtle_kv {
 /*explicit*/ LeafPageView::LeafPageView(
     std::shared_ptr<const llfs::PageBuffer>&& page_buffer) noexcept
     : PageView{std::move(page_buffer)}
-    , packed_leaf_page_{PackedLeafPage::view_of(*this)}
+    , packed_leaf_page_{static_cast<const PackedBlockedLeafPage*>(this->const_payload().data())}
 {
 }
 
@@ -71,7 +70,7 @@ BoxedSeq<llfs::PageId> LeafPageView::trace_refs() const /*override*/
 //
 Optional<KeyView> LeafPageView::min_key() const /*override*/
 {
-  if (this->packed_leaf_page_->items->empty()) {
+  if (!this->packed_leaf_page_->item_count()) {
     return None;
   }
   return this->packed_leaf_page_->min_key();
@@ -81,7 +80,7 @@ Optional<KeyView> LeafPageView::min_key() const /*override*/
 //
 Optional<KeyView> LeafPageView::max_key() const /*override*/
 {
-  if (this->packed_leaf_page_->items->empty()) {
+  if (!this->packed_leaf_page_->item_count()) {
     return None;
   }
   return this->packed_leaf_page_->max_key();

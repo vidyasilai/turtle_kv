@@ -484,11 +484,6 @@ KVStore::~KVStore() noexcept
                                << BATT_INSPECT(art.bytes_per_insert());
   }
   {
-    auto& leaf = PackedLeafPage::metrics();
-    LOG_IF(INFO, show_metrics) << BATT_INSPECT(leaf.page_utilization_pct_stats)
-                               << BATT_INSPECT(leaf.packed_size_stats)
-                               << BATT_INSPECT(leaf.packed_trie_wasted_stats);
-  }
 
   this->halt();
   this->join();
@@ -1880,11 +1875,6 @@ void KVStore::collect_stats(
 
   emit_latency("kv_store.delta_get_latency", kv_store.delta_get_latency);
   emit_latency("kv_store.checkpoint_get_latency", kv_store.checkpoint_get_latency);
-
-  fn("leaf.find_key_success.count", PackedLeafPage::metrics().find_key_success_count.get());
-  fn("leaf.find_key_failure.count", PackedLeafPage::metrics().find_key_failure_count.get());
-
-  emit_latency("leaf.find_key_latency", PackedLeafPage::metrics().find_key_latency);
 
   {
     auto& query_page_loader = PinningPageLoader::metrics();

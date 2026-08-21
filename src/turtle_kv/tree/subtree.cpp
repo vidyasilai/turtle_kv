@@ -4,9 +4,9 @@
 #include <turtle_kv/tree/in_memory_leaf.hpp>
 #include <turtle_kv/tree/in_memory_node.hpp>
 #include <turtle_kv/tree/key_query.hpp>
+#include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/node_page_view.hpp>
-#include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/packed_node_page.hpp>
 #include <turtle_kv/tree/the_key.hpp>
 #include <turtle_kv/tree/visit_tree_page.hpp>
@@ -166,7 +166,7 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
 
         if (parent_height == 2) {
           //+++++++++++-+-+--+----- --- -- -  -  -   -
-          // Case: {BatchUpdate} + {PackedLeafPage} => InMemoryLeaf
+          // Case: {BatchUpdate} + {PackedBlockedLeafPage} => InMemoryLeaf
 
           auto new_leaf =
               std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_page), tree_options);
@@ -362,7 +362,7 @@ StatusOr<i32> Subtree::get_height(llfs::PageLoader& page_loader,
             page_id_slot,
             overcommit,
 
-            [](const PackedLeafPage&) -> StatusOr<i32> {
+            [](const PackedBlockedLeafPage&) -> StatusOr<i32> {
               return 1;
             },
             [](const PackedNodePage& packed_node) -> StatusOr<i32> {
@@ -392,7 +392,7 @@ StatusOr<KeyView> Subtree::get_min_key(llfs::PageLoader& page_loader,
             page_id_slot,
             overcommit,
 
-            [](const PackedLeafPage& packed_leaf) -> StatusOr<KeyView> {
+            [](const PackedBlockedLeafPage& packed_leaf) -> StatusOr<KeyView> {
               return packed_leaf.min_key();
             },
 
@@ -423,7 +423,7 @@ StatusOr<KeyView> Subtree::get_max_key(llfs::PageLoader& page_loader,
             page_id_slot,
             overcommit,
 
-            [](const PackedLeafPage& packed_leaf) -> StatusOr<KeyView> {
+            [](const PackedBlockedLeafPage& packed_leaf) -> StatusOr<KeyView> {
               return packed_leaf.max_key();
             },
 
@@ -794,7 +794,8 @@ Status Subtree::unpack_if_necessary(llfs::PageLoader& page_loader,
     llfs::PinnedPage& pinned_page = *status_or_pinned_page;
 
     if (height == 1) {
-      const PackedLeafPage& packed_leaf = *PackedLeafPage::view_of(pinned_page);
+      const PackedBlockedLeafPage& packed_leaf =
+          PackedBlockedLeafPage::view_of(pinned_page.const_buffer());
 
       std::unique_ptr<InMemoryLeaf> new_leaf = InMemoryLeaf::unpack(batt::make_copy(pinned_page),
                                                                     tree_options,

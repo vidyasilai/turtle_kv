@@ -8,8 +8,31 @@
 
 #include "packed_blocked_leaf_page.hpp"
 //
+#include <turtle_kv/tree/leaf_page_view.hpp>
+
+#include <turtle_kv/config.hpp>
 
 namespace turtle_kv {
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+llfs::PageLayoutId packed_blocked_leaf_page_layout_id()
+{
+  return LeafPageView::page_layout_id();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<llfs::PinnedPage> pin_blocked_leaf_page_to_job(
+    llfs::PageCacheJob& page_job,
+    std::shared_ptr<llfs::PageBuffer>&& page_buffer)
+{
+  BATT_CHECK_OK(LeafPageView::register_layout(page_job.cache()));
+
+  return page_job.pin_new(std::make_shared<LeafPageView>(std::move(page_buffer)),
+                          llfs::LruPriority{kNewLeafLruPriority},
+                          /*callers=*/0);
+}
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //

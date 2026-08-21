@@ -1,7 +1,7 @@
 #pragma once
 
-#include <turtle_kv/tree/leaf/blocked_leaf_page_view.hpp>
 #include <turtle_kv/tree/leaf/packed_blocked_leaf_page.hpp>
+#include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
 #include <turtle_kv/tree/testing/fake_page_loader.hpp>
 #include <turtle_kv/tree/testing/fake_pinned_page.hpp>
@@ -97,7 +97,7 @@ class RandomLeafGenerator
       FakePinnedPage fake_pinned_page =
           BATT_OK_RESULT_OR_PANIC(fake_loader.load_page(page_id,
                                                         llfs::PageLoadOptions{
-                                                            BlockedLeafPageView::page_layout_id(),
+                                                            LeafPageView::page_layout_id(),
                                                             llfs::OkIfNotFound{false},
                                                         }));
 

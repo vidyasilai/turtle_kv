@@ -1,11 +1,11 @@
 #include <turtle_kv/kv_store_scanner.hpp>
 //
+#include <turtle_kv/tree/leaf/scan_blocked_leaf.hpp>
 
-#include <turtle_kv/util/env_param.hpp>
+#include <turtle_kv/util/piecewise_filter.hpp>
+#include <turtle_kv/util/piecewise_filter.ipp>
 
 namespace turtle_kv {
-
-TURTLE_KV_ENV_PARAM(bool, turtlekv_use_sharded_leaf_scanner, false);
 
 namespace {
 
@@ -35,7 +35,6 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     , page_loader_{kv_store.per_thread_.get(&kv_store).get_page_loader()}
     , slice_storage_{std::addressof(*(kv_store.per_thread_.get(&kv_store).scan_result_storage))}
     , root_{this->state_reader_->base_checkpoint_->tree()->page_id_slot_or_panic()}
-    , trie_index_sharded_view_size_{kv_store.tree_options().trie_index_sharded_view_size()}
     , tree_height_{this->state_reader_->base_checkpoint_->tree_height()}
     , min_key_{min_key}
     , needs_resume_{false}
@@ -46,6 +45,10 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     , tree_scan_path_{}
     , scan_levels_{}
     , heap_{}
+    , block_loader_{this->page_loader_,
+                    *this->slice_storage_,
+                    llfs::PinPageToJob::kFalse,
+                    kv_store.tree_options().block_size()}
 {
   auto& m = KVStoreScanner::metrics();
   m.ctor_count.add(1);
@@ -63,13 +66,12 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
                                             const llfs::PageIdSlot& root,
                                             i32 tree_height,
                                             const KeyView& min_key,
-                                            llfs::PageSize trie_index_sharded_view_size,
-                                            PageSliceStorage* slice_storage) noexcept
+                                            PageSliceStorage* slice_storage,
+                                            usize block_size) noexcept
     : state_reader_{}
     , page_loader_{page_loader}
     , slice_storage_{slice_storage}
     , root_{root}
-    , trie_index_sharded_view_size_{trie_index_sharded_view_size}
     , tree_height_{tree_height}
     , min_key_{min_key}
     , needs_resume_{false}
@@ -79,6 +81,10 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     , tree_scan_path_{}
     , scan_levels_{}
     , heap_{}
+    , block_loader_{this->page_loader_,
+                    *this->slice_storage_,
+                    llfs::PinPageToJob::kFalse,
+                    block_size}
 {
 }
 
@@ -292,19 +298,13 @@ Status KVStoreScanner::enter_subtree(i32 subtree_height,
     // Handle the bottom level specially.
     //
     if (subtree_height == 1) {
-      // Best case scenario: the full leaf page is already in-cache; pin it and push a NodeScanState
-      // that iterates though a single PackedKeyValue slice.
-      //
       metrics().full_leaf_attempts.add(1);
       StatusOr<llfs::PinnedPage> pinned_leaf =
           subtree_root.try_pin_through(this->page_loader_, load_options);
 
-      // Optimistic pin succeeded!  We are on the fast path.
-      //
       if (pinned_leaf.ok()) {
         metrics().full_leaf_success.add(1);
-        // Sanity check: does the page have leaf layout?
-        //
+
         const auto& page_header =
             *static_cast<const llfs::PackedPageHeader*>(pinned_leaf->const_buffer().data());
 
@@ -312,18 +312,12 @@ Status KVStoreScanner::enter_subtree(i32 subtree_height,
           return {batt::StatusCode::kDataLoss};
         }
 
-        // Enter the full leaf, and we are done.
-        //
         BATT_REQUIRE_OK(this->enter_leaf(std::move(*pinned_leaf), insert_heap));
 
       } else {
-        // If the pin failed, then using sharded views is the best option.
+        // If the pin failed, use BlockedLeafPageLoader.
         //
-        NodeScanState& node_state = this->tree_scan_path_.emplace_back();
-
-        BATT_REQUIRE_OK(node_state.initialize_sharded_leaf_scanner(*this,  //
-                                                                   subtree_root.page_id,
-                                                                   insert_heap));
+        this->tree_scan_path_.emplace_back(*this, subtree_root.page_id, insert_heap);
       }
       break;
     }
@@ -333,11 +327,6 @@ Status KVStoreScanner::enter_subtree(i32 subtree_height,
 
     BATT_REQUIRE_OK(pinned_page);
     BATT_REQUIRE_OK(this->validate_page_layout(subtree_height, *pinned_page));
-
-    if (subtree_height == 1) {
-      BATT_REQUIRE_OK(this->enter_leaf(std::move(*pinned_page), insert_heap));
-      break;
-    }
 
     BATT_REQUIRE_OK(this->enter_node(std::move(*pinned_page), insert_heap));
 
@@ -357,7 +346,7 @@ Status KVStoreScanner::enter_subtree(i32 subtree_height,
 template <typename InsertHeapBool>
 Status KVStoreScanner::enter_leaf(llfs::PinnedPage&& pinned_page, InsertHeapBool insert_heap)
 {
-  const PackedLeafPage& leaf = *PackedLeafPage::view_of(pinned_page);
+  const PackedBlockedLeafPage& leaf = *PackedBlockedLeafPage::view_of(pinned_page);
   this->tree_scan_path_.emplace_back(*this, std::move(pinned_page), leaf, insert_heap);
   return OkStatus();
 }
@@ -498,25 +487,30 @@ Status KVStoreScanner::set_next_item()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ KVStoreScanner::ScanLevel::ScanLevel(ShardedLeafTag,
-                                                  NodeScanState* node_state,
-                                                  ShardedLeafPageScanner* leaf_scanner) noexcept
-    : key{}
-    , state_impl{ShardedLeafScanState{node_state, leaf_scanner}}
+/*explicit*/ KVStoreScanner::ScanLevel::ScanLevel(
+    const KVSlice& kv_slice,
+    NodeScanState* node_state,
+    PackedBlockedLeafPage::BlockIterator block_iter,
+    PackedBlockedLeafPage::BlockIterator block_end) noexcept
+    : key{get_key(kv_slice.front())}
+    , state_impl{FullLeafScanState{
+          .kv_slice = kv_slice,
+          .node_state = node_state,
+          .block_iter = block_iter,
+          .block_end = block_end,
+      }}
 {
-  ;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ KVStoreScanner::ScanLevel::ScanLevel(const ShardedKeyValueSlice& kv_slice,
-                                                  NodeScanState* node_state,
-                                                  i32 buffer_level_i) noexcept
-    : key{kv_slice.front_key()}
-    , state_impl{TreeLevelScanShardedState{
+/*explicit*/ KVStoreScanner::ScanLevel::ScanLevel(BlockedLeafTag,
+                                                  const KVSlice& kv_slice,
+                                                  NodeScanState* node_state) noexcept
+    : key{get_key(kv_slice.front())}
+    , state_impl{BlockedLeafScanState{
           .kv_slice = kv_slice,
           .node_state = node_state,
-          .buffer_level_i = buffer_level_i,
       }}
 {
 }
@@ -580,11 +574,11 @@ EditView KVStoreScanner::ScanLevel::item() const
       [this](const TreeLevelScanState& state) -> EditView {
         return EditView{this->key, get_value(state.kv_slice.front())};
       },
-      [this](const TreeLevelScanShardedState& state) -> EditView {
-        return EditView{this->key, state.kv_slice.front_value()};
+      [this](const FullLeafScanState& state) -> EditView {
+        return EditView{this->key, get_value(state.kv_slice.front())};
       },
-      [this](const ShardedLeafScanState& state) -> EditView {
-        return EditView{this->key, BATT_OK_RESULT_OR_PANIC(state.leaf_scanner_->front_value())};
+      [this](const BlockedLeafScanState& state) -> EditView {
+        return EditView{this->key, get_value(state.kv_slice.front())};
       });
 }
 
@@ -610,11 +604,11 @@ ValueView KVStoreScanner::ScanLevel::value() const
       [](const TreeLevelScanState& state) -> ValueView {
         return get_value(state.kv_slice.front());
       },
-      [](const TreeLevelScanShardedState& state) -> ValueView {
-        return state.kv_slice.front_value();
+      [](const FullLeafScanState& state) -> ValueView {
+        return get_value(state.kv_slice.front());
       },
-      [](const ShardedLeafScanState& state) -> ValueView {
-        return BATT_OK_RESULT_OR_PANIC(state.leaf_scanner_->front_value());
+      [](const BlockedLeafScanState& state) -> ValueView {
+        return get_value(state.kv_slice.front());
       });
 }
 
@@ -685,27 +679,35 @@ bool KVStoreScanner::ScanLevel::advance()
         this->key = get_key(state.kv_slice.front());
         return true;
       },
-      [this](TreeLevelScanShardedState& state) -> bool {
+      [this](FullLeafScanState& state) -> bool {
         state.kv_slice.drop_front();
         if (state.kv_slice.empty()) {
-          state.kv_slice = state.node_state->pull_next_sharded(state.buffer_level_i);
+          // Advance to the next block.
+          //
+          ++state.block_iter;
+          while (state.block_iter != state.block_end) {
+            state.kv_slice = state.block_iter->items_slice();
+            if (!state.kv_slice.empty()) {
+              this->key = get_key(state.kv_slice.front());
+              return true;
+            }
+            ++state.block_iter;
+          }
+          state.node_state->active_levels_ = 0;
+          return false;
+        }
+        this->key = get_key(state.kv_slice.front());
+        return true;
+      },
+      [this](BlockedLeafScanState& state) -> bool {
+        state.kv_slice.drop_front();
+        if (state.kv_slice.empty()) {
+          state.kv_slice = state.node_state->pull_next(0);
           if (state.kv_slice.empty()) {
             return false;
           }
         }
-        this->key = state.kv_slice.front_key();
-        return true;
-      },
-      [this](ShardedLeafScanState& state) -> bool {
-        state.leaf_scanner_->drop_front();
-        if (state.leaf_scanner_->item_range_empty()) {
-          Status load_status = state.leaf_scanner_->load_next_item_range();
-          if (!load_status.ok()) {
-            state.node_state_->active_levels_ = 0;
-            return false;
-          }
-        }
-        this->key = state.leaf_scanner_->front_key();
+        this->key = get_key(state.kv_slice.front());
         return true;
       });
 }
@@ -722,66 +724,35 @@ template <bool kInsertHeap>
     , pinned_page_{std::move(page)}
     , node_{&node}
     , pivot_i_{(i32)in_node(node).find_pivot_containing(kv_scanner.min_key_)}
+    , scan_status_{OkStatus()}
 {
   const i32 n_levels = this->node_->get_level_count();
 
-  if (getenv_param<turtlekv_use_sharded_leaf_scanner>()) {
-    this->level_scanners_.emplace<ShardedLevelVector>();
-  } else {
-    this->level_scanners_.emplace<LevelVector>();
-  }
-
   for (i32 buffer_level_i = 0; buffer_level_i < n_levels; ++buffer_level_i) {
-    PackedLevel& level = this->levels_.emplace_back(this->node_->is_size_tiered()
-                                                        ? this->node_->get_tier(buffer_level_i)
-                                                        : this->node_->get_level(buffer_level_i));
+    PackedLevel& level = this->levels_.emplace_back(
+        this->node_->is_size_tiered()
+            ? this->node_->get_tier(buffer_level_i)
+            : this->node_->get_level(buffer_level_i));
 
-    if (getenv_param<turtlekv_use_sharded_leaf_scanner>()) {
-      ShardedLevelVector& sharded_scanners = std::get<ShardedLevelVector>(this->level_scanners_);
-      BATT_CHECK_NE(kv_scanner.slice_storage_, nullptr);
-      sharded_scanners.emplace_back(*this->node_,
-                                    level,
-                                    kv_scanner.page_loader_,
-                                    *(kv_scanner.slice_storage_),
-                                    llfs::PinPageToJob::kFalse,
-                                    kv_scanner.trie_index_sharded_view_size_,
-                                    this->pivot_i_,
-                                    kv_scanner.min_key_);
+    this->level_seqs_.emplace_back(
+        scan_segmented_level(*this->node_,
+                             level,
+                             kv_scanner.block_loader_,
+                             this->scan_status_,
+                             this->pivot_i_,
+                             kv_scanner.min_key_) |
+        batt::seq::boxed());
 
-      ShardedKeyValueSlice first_slice = this->pull_next_sharded(buffer_level_i);
-
-      if (!first_slice.empty()) {
-        this->active_levels_ |= (u64{1} << buffer_level_i);
-        ScanLevel& level = kv_scanner.scan_levels_.emplace_back(first_slice, this, buffer_level_i);
-        if (kInsertHeap) {
+    SlotSlice first_slice = this->pull_next(buffer_level_i);
+    if (!first_slice.empty()) {
+      this->active_levels_ |= (u64{1} << buffer_level_i);
+      ScanLevel& level = kv_scanner.scan_levels_.emplace_back(first_slice, this, buffer_level_i);
+      if (kInsertHeap) {
 #if TURTLE_KV_PROFILE_QUERIES
-          LatencyTimer timer{batt::Every2ToTheConst<8>{},
-                             KVStoreScanner::metrics().heap_insert_latency};
+        LatencyTimer timer{batt::Every2ToTheConst<8>{},
+                           KVStoreScanner::metrics().heap_insert_latency};
 #endif
-          kv_scanner.heap_.insert(&level);
-        }
-      }
-    } else {
-      LevelVector& scanners = std::get<LevelVector>(this->level_scanners_);
-      scanners.emplace_back(*this->node_,
-                            level,
-                            kv_scanner.page_loader_,
-                            llfs::PinPageToJob::kFalse,
-                            llfs::PageCacheOvercommit::not_allowed(),
-                            this->pivot_i_,
-                            kv_scanner.min_key_);
-
-      KVSlice first_slice = this->pull_next(buffer_level_i);
-      if (!first_slice.empty()) {
-        this->active_levels_ |= (u64{1} << buffer_level_i);
-        ScanLevel& level = kv_scanner.scan_levels_.emplace_back(first_slice, this, buffer_level_i);
-        if (kInsertHeap) {
-#if TURTLE_KV_PROFILE_QUERIES
-          LatencyTimer timer{batt::Every2ToTheConst<8>{},
-                             KVStoreScanner::metrics().heap_insert_latency};
-#endif
-          kv_scanner.heap_.insert(&level);
-        }
+        kv_scanner.heap_.insert(&level);
       }
     }
   }
@@ -793,39 +764,94 @@ template <bool kInsertHeap>
 /*explicit*/ KVStoreScanner::NodeScanState::NodeScanState(
     KVStoreScanner& kv_scanner,
     llfs::PinnedPage&& page,
-    const PackedLeafPage& leaf,
+    const PackedBlockedLeafPage& leaf,
     std::integral_constant<bool, kInsertHeap>) noexcept
     : active_levels_{0}
     , pinned_page_{std::move(page)}
     , node_{nullptr}
     , pivot_i_{0}
+    , scan_status_{OkStatus()}
 {
-  KVSlice first_slice = as_slice(leaf.lower_bound(kv_scanner.min_key_), leaf.items_end());
+  // Find the block containing the min_key and get the first non-empty slice.
+  //
+  auto block_iter = leaf.find_block_containing_key(kv_scanner.min_key_);
+  auto block_end = leaf.blocks_end();
+
+  if (block_iter == block_end) {
+    return;
+  }
+
+  // Get the first slice starting from min_key within the first block.
+  //
+  SlotSlice first_slice = block_iter->items_slice(
+      /*key_lower_bound=*/kv_scanner.min_key_,
+      /*key_upper_bound=*/None);
+
+  // If the first block's slice is empty, advance to find a non-empty one.
+  //
+  while (first_slice.empty()) {
+    ++block_iter;
+    if (block_iter == block_end) {
+      return;
+    }
+    first_slice = block_iter->items_slice();
+  }
+
+  this->active_levels_ = 1;
+  ScanLevel& level = kv_scanner.scan_levels_.emplace_back(first_slice, this, block_iter, block_end);
+  if (kInsertHeap) {
+#if TURTLE_KV_PROFILE_QUERIES
+    LatencyTimer timer{batt::Every2ToTheConst<8>{},
+                       KVStoreScanner::metrics().heap_insert_latency};
+#endif
+    kv_scanner.heap_.insert(&level);
+  }
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+template <bool kInsertHeap>
+/*explicit*/ KVStoreScanner::NodeScanState::NodeScanState(
+    KVStoreScanner& kv_scanner,
+    llfs::PageId page_id,
+    std::integral_constant<bool, kInsertHeap>)
+    : active_levels_{0}
+    , pinned_page_{}
+    , node_{nullptr}
+    , pivot_i_{0}
+    , scan_status_{OkStatus()}
+{
+  StatusOr<const PackedBlockedLeafPage*> leaf = kv_scanner.block_loader_.set_page(page_id);
+  if (!leaf.ok()) {
+    this->scan_status_ = leaf.status();
+    return;
+  }
+
+  this->level_seqs_.emplace_back(
+      scan_blocked_leaf(*leaf,
+                        &kv_scanner.block_loader_,
+                        this->leaf_filter_,
+                        kv_scanner.min_key_) |
+      batt::seq::status_ok() |
+      batt::seq::map([](Slice<const PackedKeyValueSlotPtr> slice) -> EditSlice {
+        return EditSlice{slice};
+      }) |
+      batt::seq::boxed());
+
+  SlotSlice first_slice = this->pull_next(0);
   if (first_slice.empty()) {
     return;
   }
 
   this->active_levels_ = 1;
-  if (getenv_param<turtlekv_use_sharded_leaf_scanner>()) {
-    ShardedKeyValueSlice sharded_slice{first_slice.begin(), first_slice.end()};
-
-    ScanLevel& level = kv_scanner.scan_levels_.emplace_back(sharded_slice, this, 0);
-    if (kInsertHeap) {
+  ScanLevel& level =
+      kv_scanner.scan_levels_.emplace_back(ScanLevel::BlockedLeafTag{}, first_slice, this);
+  if (kInsertHeap) {
 #if TURTLE_KV_PROFILE_QUERIES
-      LatencyTimer timer{batt::Every2ToTheConst<8>{},
-                         KVStoreScanner::metrics().heap_insert_latency};
+    LatencyTimer timer{batt::Every2ToTheConst<8>{},
+                       KVStoreScanner::metrics().heap_insert_latency};
 #endif
-      kv_scanner.heap_.insert(&level);
-    }
-  } else {
-    ScanLevel& level = kv_scanner.scan_levels_.emplace_back(first_slice, this, 0);
-    if (kInsertHeap) {
-#if TURTLE_KV_PROFILE_QUERIES
-      LatencyTimer timer{batt::Every2ToTheConst<8>{},
-                         KVStoreScanner::metrics().heap_insert_latency};
-#endif
-      kv_scanner.heap_.insert(&level);
-    }
+    kv_scanner.heap_.insert(&level);
   }
 }
 
@@ -836,45 +862,8 @@ template <bool kInsertHeap>
     , pinned_page_{}
     , node_{nullptr}
     , pivot_i_{0}
+    , scan_status_{OkStatus()}
 {
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <bool kInsertHeap>
-Status KVStoreScanner::NodeScanState::initialize_sharded_leaf_scanner(
-    KVStoreScanner& kv_scanner,
-    llfs::PageId page_id,
-    std::integral_constant<bool, kInsertHeap>)
-{
-  ShardedLeafPageScanner& leaf_scanner =
-      kv_scanner.sharded_leaf_scanner_.emplace(kv_scanner.page_loader_,
-                                               page_id,
-                                               kv_scanner.trie_index_sharded_view_size_);
-
-  ScanLevel& level = kv_scanner.scan_levels_.emplace_back(ShardedLeafTag{},
-                                                          /* NodeScanState */ this,
-                                                          &leaf_scanner);
-
-  // We must load the PackedLeafPage header shard before anything else.
-  //
-  BATT_REQUIRE_OK(leaf_scanner.load_header());
-
-  Status seek_status = leaf_scanner.seek_to(kv_scanner.min_key_);
-  if (seek_status == batt::StatusCode::kEndOfStream || leaf_scanner.item_range_empty()) {
-    kv_scanner.scan_levels_.pop_back();
-    return OkStatus();
-  }
-  BATT_REQUIRE_OK(seek_status);
-
-  this->active_levels_ = 1;
-  level.key = leaf_scanner.front_key();
-
-  if (kInsertHeap) {
-    kv_scanner.heap_.insert(&level);
-  }
-
-  return OkStatus();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -889,77 +878,41 @@ i32 KVStoreScanner::NodeScanState::get_height() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-auto KVStoreScanner::NodeScanState::pull_next(i32 buffer_level_i) -> KVSlice
+auto KVStoreScanner::NodeScanState::pull_next(i32 buffer_level_i) -> SlotSlice
 {
-  if (!this->node_) {
+  if (this->level_seqs_.empty()) {
     this->deactivate(buffer_level_i);
-    return KVSlice{};
+    return SlotSlice{};
   }
 
-  LevelVector& scanners = std::get<LevelVector>(this->level_scanners_);
-  PackedLevelScanner& level_scanner = scanners[buffer_level_i];
-  KVSlice* result = nullptr;
+  BoxedSeq<EditSlice>& level_seq = this->level_seqs_[buffer_level_i];
+
   for (;;) {
-    Optional<EditSlice> slice = level_scanner.next();
+    Optional<EditSlice> slice = level_seq.next();
     if (!slice) {
       this->deactivate(buffer_level_i);
-      return KVSlice{};
+      return SlotSlice{};
     }
 
+    SlotSlice result{};
     batt::case_of(
         *slice,
         [](Slice<const EditView>&) {
-          BATT_PANIC() << "Invalid EditSlice type: EditView";
+          BATT_PANIC() << "Invalid EditSlice type: EditView in scan_segmented_level output";
           BATT_UNREACHABLE();
         },
-        [](Slice<const PackedKeyValueSlotPtr>&) {
-          BATT_PANIC() << "TODO [vsilai 2026-08-17] Revisit for blocked leaves!";
-          BATT_UNREACHABLE();
-        },
-        [&](Slice<const PackedKeyValue>& kv_slice) {
+        [&](Slice<const PackedKeyValueSlotPtr>& kv_slice) {
           if (!kv_slice.empty()) {
-            result = &kv_slice;
+            result = kv_slice;
           }
+        },
+        [](Slice<const PackedKeyValue>&) {
+          BATT_PANIC() << "Invalid EditSlice type: PackedKeyValue in scan_segmented_level output";
+          BATT_UNREACHABLE();
         });
 
-    if (result) {
-      return *result;
-    }
-  }
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-auto KVStoreScanner::NodeScanState::pull_next_sharded(i32 buffer_level_i) -> ShardedKeyValueSlice
-{
-  if (!this->node_) {
-    this->deactivate(buffer_level_i);
-    return ShardedKeyValueSlice{};
-  }
-
-  auto& m = KVStoreScanner::metrics();
-
-  m.pull_next_sharded_count.add(1);
-#if TURTLE_KV_PROFILE_QUERIES
-  LatencyTimer timer{batt::Every2ToTheConst<10>{}, m.pull_next_sharded_latency};
-#endif
-
-  ShardedLevelVector& sharded_scanners = std::get<ShardedLevelVector>(this->level_scanners_);
-  PackedLevelShardedScanner& level_scanner = sharded_scanners[buffer_level_i];
-  ShardedKeyValueSlice* result = nullptr;
-  for (;;) {
-    Optional<ShardedKeyValueSlice> slice = level_scanner.next();
-    if (!slice) {
-      this->deactivate(buffer_level_i);
-      return ShardedKeyValueSlice{};
-    }
-
-    if (!slice->empty()) {
-      result = &(*slice);
-    }
-
-    if (result) {
-      return *result;
+    if (!result.empty()) {
+      return result;
     }
   }
 }
