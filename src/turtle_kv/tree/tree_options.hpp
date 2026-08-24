@@ -285,31 +285,6 @@ class TreeOptions
 
   //----- --- -- -  -  -   -
 
-  usize trie_index_reserve_size() const
-  {
-    if (BATT_HINT_TRUE(this->trie_index_reserve_size_)) {
-      return *this->trie_index_reserve_size_;
-    }
-    if (this->leaf_size() < 128 * kKiB) {
-      return 0;
-    }
-    if (this->key_size_hint() > 16) {
-      return ((this->expected_items_per_leaf() * this->key_size_hint() + 15) / 16) * 5 / 8;
-    }
-    return ((this->expected_items_per_leaf() * this->key_size_hint() + 7) / 8) * 3 / 4;
-  }
-
-  Self& set_trie_index_reserve_size(Optional<usize> n_bytes)
-  {
-    this->trie_index_reserve_size_ = n_bytes;
-    return *this;
-  }
-
-  llfs::PageSize trie_index_sharded_view_size() const
-  {
-    return llfs::PageSize{u32{1} << batt::log2_ceil(this->trie_index_reserve_size() + 256)};
-  }
-
   usize flush_size() const
   {
     return this->leaf_size() * 15 / 16;
@@ -428,8 +403,6 @@ class TreeOptions
   // compaction.
   //
   u16 buffer_level_trim_ = 0;
-
-  Optional<usize> trie_index_reserve_size_;
 
   double min_flush_factor_ = 1.0;
   double max_flush_factor_ = 1.0;

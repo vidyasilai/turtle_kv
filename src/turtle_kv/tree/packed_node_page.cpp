@@ -8,6 +8,7 @@
 
 #include <turtle_kv/tree/packed_node_page.hpp>
 //
+#include <turtle_kv/tree/leaf_page_view.hpp>
 
 #include <turtle_kv/tree/algo/nodes.hpp>
 #include <turtle_kv/tree/algo/segmented_levels.hpp>

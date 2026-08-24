@@ -224,6 +224,7 @@ class KVStoreScanner
     LevelSeqVector level_seqs_;
     Status scan_status_;
     PiecewiseFilter<u32> leaf_filter_;
+    Optional<BlockedLeafPageLoader> block_loader_;
 
     //----- --- -- -  -  -   -
 
@@ -258,7 +259,7 @@ class KVStoreScanner
 
     i32 get_height() const;
 
-    SlotSlice pull_next(i32 buffer_level_i);
+    KVSlice pull_next(i32 buffer_level_i);
 
     void deactivate(i32 buffer_level_i);
   };
@@ -324,6 +325,7 @@ class KVStoreScanner
   batt::Toggle<KVStore::State>::Reader state_reader_;
   llfs::PageLoader& page_loader_;
   PageSliceStorage* slice_storage_;
+  usize block_size_;
   llfs::PageIdSlot root_;
   i32 tree_height_;
   KeyView min_key_;
@@ -339,7 +341,6 @@ class KVStoreScanner
   boost::container::static_vector<NodeScanState, kMaxTreeHeight - 1> tree_scan_path_;
   boost::container::small_vector<ScanLevel, kMaxHeapSize + 32> scan_levels_;
   StackMerger<ScanLevel, ScanLevelMinHeapOrder, kMaxHeapSize> heap_;
-  BlockedLeafPageLoader block_loader_;
 };
 
 }  // namespace turtle_kv

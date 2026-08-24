@@ -7,8 +7,9 @@
 #include <turtle_kv/tree/in_memory_node.hpp>
 #include <turtle_kv/tree/in_memory_node_hybrid_level.hpp>
 #include <turtle_kv/tree/key_query.hpp>
+#include <turtle_kv/tree/leaf/full_blocked_leaf_page_loader.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
-#include <turtle_kv/tree/segmented_level_scanner.hpp>
+#include <turtle_kv/tree/scan_segmented_level.hpp>
 
 #include <turtle_kv/util/piecewise_filter.ipp>
 
@@ -226,19 +227,18 @@ bool InMemoryNodeSegmentedLevel::is_pivot_active(i32 pivot_i) const
 void InMemoryNodeSegmentedLevel::check_items_sorted(const InMemoryNode& node,
                                                     llfs::PageLoader& page_loader) const
 {
-  SegmentedLevelScanner<const InMemoryNode, const SegmentedLevel, llfs::PageLoader> scanner{
-      node,
-      *this,
-      page_loader,
-      llfs::PinPageToJob::kDefault,
-      llfs::PageCacheOvercommit::not_allowed(),
-  };
+  Status scan_status = OkStatus();
+  FullBlockedLeafPageLoader block_loader{page_loader,
+                                         llfs::PinPageToJob::kDefault,
+                                         llfs::PageCacheOvercommit::not_allowed()};
+
+  auto edit_seq = scan_segmented_level(node, *this, std::move(block_loader), scan_status);
 
   Optional<std::string> prev_slice_max_key;
   usize item_i = 0;
 
   for (;;) {
-    Optional<EditSlice> edit_slice = scanner.next();
+    Optional<EditSlice> edit_slice = edit_seq.next();
 
     if (!edit_slice) {
       break;
@@ -271,15 +271,11 @@ BoxedSeq<EditSlice> InMemoryNodeSegmentedLevel::to_boxed_seq(const InMemoryNode&
     return seq::Empty<EditSlice>{}  //
            | seq::boxed();
   }
-  return SegmentedLevelScanner<const InMemoryNode, const SegmentedLevel, llfs::PageLoader>{
-             node,
-             *this,
-             update_context.page_loader,
-             llfs::PinPageToJob::kDefault,
-             update_context.overcommit,
-             segment_load_status,
-             min_pivot_i,
-             min_key}  //
+  FullBlockedLeafPageLoader block_loader{update_context.page_loader,
+                                         llfs::PinPageToJob::kDefault,
+                                         update_context.overcommit};
+
+  return scan_segmented_level(node, *this, std::move(block_loader), segment_load_status, min_pivot_i, min_key)
          | seq::boxed();
 }
 

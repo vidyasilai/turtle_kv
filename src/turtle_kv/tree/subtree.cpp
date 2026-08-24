@@ -794,8 +794,7 @@ Status Subtree::unpack_if_necessary(llfs::PageLoader& page_loader,
     llfs::PinnedPage& pinned_page = *status_or_pinned_page;
 
     if (height == 1) {
-      const PackedBlockedLeafPage& packed_leaf =
-          PackedBlockedLeafPage::view_of(pinned_page.const_buffer());
+      const PackedBlockedLeafPage& packed_leaf = *PackedBlockedLeafPage::view_of(pinned_page);
 
       std::unique_ptr<InMemoryLeaf> new_leaf = InMemoryLeaf::unpack(batt::make_copy(pinned_page),
                                                                     tree_options,

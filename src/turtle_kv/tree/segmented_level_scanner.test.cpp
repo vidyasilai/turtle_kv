@@ -13,7 +13,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <turtle_kv/tree/testing/fake_blocked_leaf_page_loader.hpp>
+#include <turtle_kv/tree/leaf/full_blocked_leaf_page_loader.hpp>
 #include <turtle_kv/tree/testing/fake_node.hpp>
 #include <turtle_kv/tree/testing/random_leaf_generator.hpp>
 
@@ -58,7 +58,7 @@ using turtle_kv::SegmentedLevelBuilder;
 using turtle_kv::set_bit;
 using turtle_kv::Status;
 using turtle_kv::StatusOr;
-using turtle_kv::testing::FakeBlockedLeafPageLoader;
+using turtle_kv::FullBlockedLeafPageLoader;
 using turtle_kv::testing::FakeLevel;
 using turtle_kv::testing::FakeNode;
 using turtle_kv::testing::FakePageLoader;
@@ -194,10 +194,12 @@ class SegmentedLevelScannerTest : public ::testing::Test
       // Collect actual keys, using scan_segmented_level.
       //
       {
-        FakeBlockedLeafPageLoader block_loader{*this->fake_page_loader};
+        FullBlockedLeafPageLoader block_loader{*this->fake_page_loader,
+                                               llfs::PinPageToJob::kDefault,
+                                               llfs::PageCacheOvercommit::not_allowed()};
         Status status;
 
-        scan_segmented_level(actual, actual.level_, block_loader, status) |
+        scan_segmented_level(actual, actual.level_, std::move(block_loader), status) |
             seq::for_each([&](const EditSlice& edit_slice) {
               batt::case_of(   //
                   edit_slice,  //
@@ -228,12 +230,14 @@ class SegmentedLevelScannerTest : public ::testing::Test
         if (pivot_i != old_pivot_i) {
           std::vector<std::string_view> actual_keys2;
           {
-            FakeBlockedLeafPageLoader block_loader2{*this->fake_page_loader};
+            FullBlockedLeafPageLoader block_loader2{*this->fake_page_loader,
+                                                     llfs::PinPageToJob::kDefault,
+                                                     llfs::PageCacheOvercommit::not_allowed()};
             Status status2;
 
             scan_segmented_level(actual,
                                  actual.level_,
-                                 block_loader2,
+                                 std::move(block_loader2),
                                  status2,
                                  /*min_pivot_i=*/pivot_i) |
                 seq::for_each([&](const EditSlice& edit_slice) {

@@ -12,6 +12,8 @@
 
 #include <turtle_kv/config.hpp>
 
+#include <llfs/page_cache_job.hpp>
+
 namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

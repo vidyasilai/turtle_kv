@@ -24,6 +24,7 @@
 #include <boost/range/irange.hpp>
 
 #include <concepts>
+#include <type_traits>
 
 namespace turtle_kv {
 
@@ -36,7 +37,7 @@ concept SegmentedLevelNode = requires(const T& node, usize i) {
 };
 
 template <typename T>
-concept SegmentedLevel = requires(const T& level, usize i) {
+concept SegmentedLevelModel = requires(const T& level, usize i) {
   typename T::Segment;
   { level.segment_count() } -> std::convertible_to<usize>;
   { level.get_segment(i) } -> std::same_as<const typename T::Segment&>;
@@ -50,28 +51,35 @@ concept SegmentedLevel = requires(const T& level, usize i) {
  * per-segment scanning to scan_blocked_leaf. Segments whose active pivot range falls entirely
  * below min_pivot_i are skipped.
  */
-template <SegmentedLevelNode NodeT, SegmentedLevel LevelT, BlockedLeafPageLoader BlockLoaderT>
+template <SegmentedLevelNode NodeT, SegmentedLevelModel LevelT, typename BlockLoaderT>
+  requires BlockedLeafPageLoaderModel<std::remove_reference_t<BlockLoaderT>>
 auto scan_segmented_level(const NodeT& node,
                           const LevelT& level,
-                          BlockLoaderT& block_loader,
+                          BlockLoaderT&& block_loader,
                           Status& status,
                           i32 min_pivot_i = 0,
                           Optional<KeyView> min_key = None)
 {
   namespace seq = batt::seq;
 
+  using BlockLoader = std::remove_reference_t<BlockLoaderT>;
+
   // Deduce the per-segment inner sequence type returned by scan_blocked_leaf.
   //
   using InnerSeq = decltype(scan_blocked_leaf(
       std::declval<const PackedBlockedLeafPage*>(),
-      std::declval<BlockLoaderT*>(),
+      std::declval<BlockLoader*>(),
       std::declval<const typename LevelT::Segment&>().get_filter(std::declval<const LevelT&>()),
       std::declval<KeyView>(),
       std::declval<Optional<KeyView>>()));
 
   return batt::as_seq(boost::irange<usize>(0, level.segment_count())) |
-         seq::filter_map([&node, &level, &block_loader, &status, min_pivot_i, min_key](
-                             usize segment_i) -> Optional<InnerSeq> {
+         seq::filter_map([&node,
+                          &level,
+                          block_loader = BATT_FORWARD(block_loader),
+                          &status,
+                          min_pivot_i,
+                          min_key](usize segment_i) mutable -> Optional<InnerSeq> {
            if (!status.ok()) {
              return None;
            }

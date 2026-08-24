@@ -24,7 +24,7 @@ namespace turtle_kv {
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
 template <typename T>
-concept BlockedLeafPageLoader = requires(T& loader, llfs::PageId page_id, u32 block_index) {
+concept BlockedLeafPageLoaderModel = requires(T& loader, llfs::PageId page_id, u32 block_index) {
   { loader.set_page(page_id) } -> std::convertible_to<StatusOr<const PackedBlockedLeafPage*>>;
   { loader.load_block(block_index) } -> std::convertible_to<StatusOr<const PackedLeafBlock*>>;
 };

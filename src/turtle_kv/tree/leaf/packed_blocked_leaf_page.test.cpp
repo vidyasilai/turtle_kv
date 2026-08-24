@@ -19,7 +19,8 @@
 #include <turtle_kv/tree/leaf/packed_blocked_leaf_page.sharded_live_ranges.ipp>
 #include <turtle_kv/tree/leaf/scan_blocked_leaf.hpp>
 #include <turtle_kv/tree/random_str.hpp>
-#include <turtle_kv/tree/testing/fake_blocked_leaf_page_loader.hpp>
+#include <turtle_kv/tree/leaf/full_blocked_leaf_page_loader.hpp>
+#include <turtle_kv/tree/testing/fake_page_loader.hpp>
 
 #include <turtle_kv/util/piecewise_filter.ipp>
 #include <turtle_kv/util/piecewise_filter.test.hpp>
@@ -363,7 +364,7 @@ TEST_F(PackedBlockedLeafPageTest, Random)
 TEST_F(PackedBlockedLeafPageTest, ScanBlockedLeaf)
 {
   using turtle_kv::scan_blocked_leaf;
-  using turtle_kv::testing::FakeBlockedLeafPageLoader;
+  using turtle_kv::testing::FakePageLoader;
 
   const usize kFirstSeed = 0;
   const usize kNumSeeds = 250;
@@ -385,7 +386,7 @@ TEST_F(PackedBlockedLeafPageTest, ScanBlockedLeaf)
     const auto& edits = this->edits_;
     const u32 item_count = packed_leaf.item_count();
 
-    FakeBlockedLeafPageLoader block_loader{&packed_leaf};
+    turtle_kv::FullBlockedLeafPageLoader<FakePageLoader> block_loader{&packed_leaf};
 
     std::uniform_int_distribution<usize> pick_edit{0, edits.size() - 1};
 

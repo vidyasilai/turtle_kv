@@ -32,7 +32,7 @@ namespace turtle_kv {
       std::make_unique<InMemoryLeaf>(batt::make_copy(pinned_leaf_page), tree_options);
 
   std::vector<EditView> buffer;
-  buffer.reserve(packed_leaf.items_count());
+  buffer.reserve(packed_leaf.item_count());
 
   {
     batt::ScopedWorkContext context{worker_pool};
@@ -54,7 +54,7 @@ namespace turtle_kv {
 
   MergeCompactor::ResultSet</*decay_to_items=*/true> result_set;
   const ItemView* first_edit = (const ItemView*)buffer.data();
-  result_set.append(std::move(buffer), as_slice(first_edit, packed_items.size()));
+  result_set.append(std::move(buffer), as_slice(first_edit, packed_leaf.item_count()));
   new_leaf->result_set = std::move(result_set);
 
   new_leaf->set_edit_size_totals(compute_running_total(worker_pool, *(new_leaf->result_set)));

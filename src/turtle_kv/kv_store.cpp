@@ -25,7 +25,6 @@
 #include <turtle_kv/tree/in_memory_node.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/node_page_view.hpp>
-#include <turtle_kv/tree/sharded_level_scanner.hpp>
 #include <turtle_kv/tree/storage_config.hpp>
 
 #include <turtle_kv/util/memory_stats.hpp>
@@ -426,8 +425,6 @@ u64 query_page_loader_reset_every_n()
       batt::Toggle<State>::Reader{this->state_}->base_checkpoint_->clone(),
       *this->checkpoint_volume_);
 
-  this->tree_options_.set_trie_index_reserve_size(this->tree_options_.trie_index_reserve_size());
-
   BATT_CHECK_OK(KVStore::global_init());
 
   if (this->tree_options_.filter_bits_per_key() != 0) {
@@ -483,8 +480,6 @@ KVStore::~KVStore() noexcept
                                << BATT_INSPECT(art.average_item_count())
                                << BATT_INSPECT(art.bytes_per_insert());
   }
-  {
-
   this->halt();
   this->join();
 
@@ -1898,7 +1893,6 @@ void KVStore::collect_stats(
   //
   {
     [[maybe_unused]] auto& scanner = KVStoreScanner::metrics();
-    [[maybe_unused]] auto& sharded_level_scanner = ShardedLevelScannerMetrics::instance();
     /* TODO [tastolfi 2025-11-25]
   << BATT_INSPECT(scanner.ctor_latency) << "\n"                                  //
   << BATT_INSPECT(scanner.ctor_count) << "\n"                                    //

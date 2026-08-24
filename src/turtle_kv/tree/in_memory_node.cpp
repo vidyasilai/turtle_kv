@@ -7,7 +7,7 @@
 #include <turtle_kv/tree/filter_builder.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/node_page_view.hpp>
-#include <turtle_kv/tree/segmented_level_scanner.hpp>
+#include <turtle_kv/tree/scan_segmented_level.hpp>
 #include <turtle_kv/tree/subtree_viability.hpp>
 
 #include <turtle_kv/core/algo/split_parts.hpp>

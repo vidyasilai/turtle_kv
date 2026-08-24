@@ -263,8 +263,8 @@ StatusOr<u32> find_key_lower_bound_index_using_sharded_views(llfs::PageId leaf_p
                                        llfs::PinPageToJob::kDefault,
                                        query.tree_options->block_size()};
 
-  blocked_loader.set_page(leaf_page_id);
-  const PackedBlockedLeafPage* packed_leaf = blocked_loader.leaf();
+  BATT_ASSIGN_OK_RESULT(const PackedBlockedLeafPage* packed_leaf,
+                        blocked_loader.set_page(leaf_page_id));
   BATT_CHECK_NOT_NULLPTR(packed_leaf);
 
   usize block_i = packed_leaf->find_block_index_containing_key(query.key());
@@ -346,8 +346,8 @@ StatusOr<ValueView> find_key_in_leaf_using_sharded_views(llfs::PageId leaf_page_
                                        llfs::PinPageToJob::kDefault,
                                        query.tree_options->block_size()};
 
-  blocked_loader.set_page(leaf_page_id);
-  const PackedBlockedLeafPage* packed_leaf = blocked_loader.leaf();
+  BATT_ASSIGN_OK_RESULT(const PackedBlockedLeafPage* packed_leaf,
+                        blocked_loader.set_page(leaf_page_id));
   BATT_CHECK_NOT_NULLPTR(packed_leaf);
 
   usize block_i = packed_leaf->find_block_index_containing_key(query.key());

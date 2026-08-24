@@ -34,6 +34,7 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     : state_reader_{kv_store.state_}
     , page_loader_{kv_store.per_thread_.get(&kv_store).get_page_loader()}
     , slice_storage_{std::addressof(*(kv_store.per_thread_.get(&kv_store).scan_result_storage))}
+    , block_size_{kv_store.tree_options().block_size()}
     , root_{this->state_reader_->base_checkpoint_->tree()->page_id_slot_or_panic()}
     , tree_height_{this->state_reader_->base_checkpoint_->tree_height()}
     , min_key_{min_key}
@@ -45,10 +46,6 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     , tree_scan_path_{}
     , scan_levels_{}
     , heap_{}
-    , block_loader_{this->page_loader_,
-                    *this->slice_storage_,
-                    llfs::PinPageToJob::kFalse,
-                    kv_store.tree_options().block_size()}
 {
   auto& m = KVStoreScanner::metrics();
   m.ctor_count.add(1);
@@ -71,6 +68,7 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     : state_reader_{}
     , page_loader_{page_loader}
     , slice_storage_{slice_storage}
+    , block_size_{block_size}
     , root_{root}
     , tree_height_{tree_height}
     , min_key_{min_key}
@@ -81,10 +79,6 @@ KeyView art_scanner_get_key(artc::ART<MemTableValueEntry>::Scanner<kSynchronized
     , tree_scan_path_{}
     , scan_levels_{}
     , heap_{}
-    , block_loader_{this->page_loader_,
-                    *this->slice_storage_,
-                    llfs::PinPageToJob::kFalse,
-                    block_size}
 {
 }
 
@@ -737,13 +731,16 @@ template <bool kInsertHeap>
     this->level_seqs_.emplace_back(
         scan_segmented_level(*this->node_,
                              level,
-                             kv_scanner.block_loader_,
+                             BlockedLeafPageLoader{kv_scanner.page_loader_,
+                                                   *kv_scanner.slice_storage_,
+                                                   llfs::PinPageToJob::kFalse,
+                                                   kv_scanner.block_size_},
                              this->scan_status_,
                              this->pivot_i_,
                              kv_scanner.min_key_) |
         batt::seq::boxed());
 
-    SlotSlice first_slice = this->pull_next(buffer_level_i);
+    KVSlice first_slice = this->pull_next(buffer_level_i);
     if (!first_slice.empty()) {
       this->active_levels_ |= (u64{1} << buffer_level_i);
       ScanLevel& level = kv_scanner.scan_levels_.emplace_back(first_slice, this, buffer_level_i);
@@ -783,7 +780,7 @@ template <bool kInsertHeap>
 
   // Get the first slice starting from min_key within the first block.
   //
-  SlotSlice first_slice = block_iter->items_slice(
+  KVSlice first_slice = block_iter->items_slice(
       /*key_lower_bound=*/kv_scanner.min_key_,
       /*key_upper_bound=*/None);
 
@@ -820,8 +817,12 @@ template <bool kInsertHeap>
     , node_{nullptr}
     , pivot_i_{0}
     , scan_status_{OkStatus()}
+    , block_loader_{BlockedLeafPageLoader{kv_scanner.page_loader_,
+                                          *kv_scanner.slice_storage_,
+                                          llfs::PinPageToJob::kFalse,
+                                          kv_scanner.block_size_}}
 {
-  StatusOr<const PackedBlockedLeafPage*> leaf = kv_scanner.block_loader_.set_page(page_id);
+  StatusOr<const PackedBlockedLeafPage*> leaf = this->block_loader_->set_page(page_id);
   if (!leaf.ok()) {
     this->scan_status_ = leaf.status();
     return;
@@ -829,7 +830,7 @@ template <bool kInsertHeap>
 
   this->level_seqs_.emplace_back(
       scan_blocked_leaf(*leaf,
-                        &kv_scanner.block_loader_,
+                        &*this->block_loader_,
                         this->leaf_filter_,
                         kv_scanner.min_key_) |
       batt::seq::status_ok() |
@@ -838,7 +839,7 @@ template <bool kInsertHeap>
       }) |
       batt::seq::boxed());
 
-  SlotSlice first_slice = this->pull_next(0);
+  KVSlice first_slice = this->pull_next(0);
   if (first_slice.empty()) {
     return;
   }
@@ -878,11 +879,11 @@ i32 KVStoreScanner::NodeScanState::get_height() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-auto KVStoreScanner::NodeScanState::pull_next(i32 buffer_level_i) -> SlotSlice
+auto KVStoreScanner::NodeScanState::pull_next(i32 buffer_level_i) -> KVSlice
 {
   if (this->level_seqs_.empty()) {
     this->deactivate(buffer_level_i);
-    return SlotSlice{};
+    return KVSlice{};
   }
 
   BoxedSeq<EditSlice>& level_seq = this->level_seqs_[buffer_level_i];
@@ -891,10 +892,10 @@ auto KVStoreScanner::NodeScanState::pull_next(i32 buffer_level_i) -> SlotSlice
     Optional<EditSlice> slice = level_seq.next();
     if (!slice) {
       this->deactivate(buffer_level_i);
-      return SlotSlice{};
+      return KVSlice{};
     }
 
-    SlotSlice result{};
+    KVSlice result{};
     batt::case_of(
         *slice,
         [](Slice<const EditView>&) {

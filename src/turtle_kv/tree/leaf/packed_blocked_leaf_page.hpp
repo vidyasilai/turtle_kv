@@ -12,6 +12,7 @@
 #include "packed_leaf_block.hpp"
 #include "packed_leaf_block.iterator.hpp"
 
+#include <turtle_kv/core/edit_slice.hpp>
 #include <turtle_kv/core/packed_key_value_slot.hpp>
 #include <turtle_kv/core/packed_key_value_slot_slice.hpp>
 
@@ -32,6 +33,7 @@
 #include <artc/packed/query.hpp>
 
 #include <batteries/bit_ops/bit_count.hpp>
+#include <batteries/seq/boxed.hpp>
 #include <batteries/seq/flatten.hpp>
 #include <batteries/seq/map.hpp>
 #include <batteries/strong_typedef.hpp>
@@ -301,6 +303,15 @@ struct PackedBlockedLeafPage  //
   SlotSliceSeq slot_slice_seq() const noexcept
   {
     return this->blocks_seq() | batt::seq::map(SlotSliceFromBlock{});
+  }
+
+  BoxedSeq<EditSlice> as_edit_slice_seq() const noexcept
+  {
+    return this->blocks_seq() |
+           batt::seq::map([](const PackedLeafBlock& block) -> EditSlice {
+             return block.items_slice();
+           }) |
+           batt::seq::boxed();
   }
 
   template <PiecewiseFilterStorageModel<u32> FilterModelT>

@@ -3,7 +3,7 @@
 #include <turtle_kv/tree/algo/nodes.hpp>
 #include <turtle_kv/tree/algo/segments.hpp>
 #include <turtle_kv/tree/leaf/packed_blocked_leaf_page.ipp>
-#include <turtle_kv/tree/segmented_level_scanner.hpp>
+#include <turtle_kv/tree/scan_segmented_level.hpp>
 
 #include <turtle_kv/import/bit_ops.hpp>
 #include <turtle_kv/import/interval.hpp>
