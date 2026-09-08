@@ -529,7 +529,8 @@ TEST(InMemoryNodeTest, SubtreeDeletions)
                                  .set_leaf_size(32 * kKiB)
                                  .set_node_size(4 * kKiB)
                                  .set_key_size_hint(key_size)
-                                 .set_value_size_hint(value_size);
+                                 .set_value_size_hint(value_size)
+                                 .set_block_size(1 * kKiB);
 
   usize items_per_leaf = tree_options.flush_size() / tree_options.expected_item_size();
   usize total_batches = 100;

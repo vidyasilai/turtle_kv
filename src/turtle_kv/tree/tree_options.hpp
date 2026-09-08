@@ -287,7 +287,7 @@ class TreeOptions
 
   usize flush_size() const
   {
-    return this->leaf_size() * 15 / 16;
+    return this->leaf_data_size();
   }
 
   //----- --- -- -  -  -   -

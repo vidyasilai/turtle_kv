@@ -24,6 +24,7 @@
 #include <boost/range/irange.hpp>
 
 #include <concepts>
+#include <memory>
 #include <type_traits>
 
 namespace turtle_kv {
@@ -64,19 +65,36 @@ auto scan_segmented_level(const NodeT& node,
 
   using BlockLoader = std::remove_reference_t<BlockLoaderT>;
 
+  // Deduce the filter type returned by Segment::get_filter.
+  //
+  using FilterT = std::remove_cvref_t<
+      decltype(std::declval<const typename LevelT::Segment&>().get_filter(
+          std::declval<const LevelT&>()))>;
+
+  // Heap-allocated state shared between the outer lambda and inner seqs. A single
+  // allocation provides a stable address for both the block loader (whose pointer is
+  // captured by inner seqs) and the filter (whose iterators are held by ShardedLiveRanges).
+  // Without stable addresses, moves of the Flatten pipeline would invalidate these.
+  //
+  struct ScanState {
+    BlockLoader block_loader;
+    Optional<FilterT> filter;
+  };
+
   // Deduce the per-segment inner sequence type returned by scan_blocked_leaf.
   //
   using InnerSeq = decltype(scan_blocked_leaf(
       std::declval<const PackedBlockedLeafPage*>(),
       std::declval<BlockLoader*>(),
-      std::declval<const typename LevelT::Segment&>().get_filter(std::declval<const LevelT&>()),
+      std::declval<const FilterT&>(),
       std::declval<KeyView>(),
       std::declval<Optional<KeyView>>()));
 
   return batt::as_seq(boost::irange<usize>(0, level.segment_count())) |
          seq::filter_map([&node,
                           &level,
-                          block_loader = BATT_FORWARD(block_loader),
+                          scan_state = std::make_shared<ScanState>(
+                              ScanState{BATT_FORWARD(block_loader), {}}),
                           &status,
                           min_pivot_i,
                           min_key](usize segment_i) mutable -> Optional<InnerSeq> {
@@ -110,15 +128,17 @@ auto scan_segmented_level(const NodeT& node,
 
            // Load the leaf page for this segment.
            //
-           auto leaf = block_loader.set_page(segment.get_leaf_page_id());
+           auto leaf = scan_state->block_loader.set_page(segment.get_leaf_page_id());
            if (!leaf.ok()) {
              status = leaf.status();
              return None;
            }
 
+           scan_state->filter.emplace(segment.get_filter(level));
+
            return scan_blocked_leaf(*leaf,
-                                    &block_loader,
-                                    segment.get_filter(level),
+                                    &scan_state->block_loader,
+                                    *scan_state->filter,
                                     lower_bound,
                                     upper_bound);
          }) |
