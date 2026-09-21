@@ -55,14 +55,14 @@ std::ostream& operator<<(std::ostream& out, const TreeOptions& t)
 usize TreeOptions::leaf_data_size() const
 {
   constexpr usize kFixedHeaders = 64 + 32;  // PackedPageHeader + PackedBlockedLeafPage
-  const usize leaf_sz = this->leaf_size();
-  const usize blk_sz = this->block_size();
-  const usize blk_capacity = blk_sz - 8;  // PackedLeafBlock header is 8 bytes
-  const usize waste_per_block = std::min<usize>(this->max_item_size() - 1, blk_capacity - 1);
+  const usize leaf_size = this->leaf_size();
+  const usize block_size = this->block_size();
+  const usize block_capacity = block_size - 8;  // PackedLeafBlock header is 8 bytes
+  const usize waste_per_block = std::min<usize>(this->max_item_size() - 1, block_capacity - 1);
 
-  const usize space = leaf_sz - kFixedHeaders - (blk_sz - 1);
-  const usize block_count = space / (blk_sz + 4);
-  const usize capacity = block_count * (blk_capacity - waste_per_block);
+  const usize space = leaf_size - kFixedHeaders - (block_size - 1);
+  const usize block_count = space / (block_size + 4);
+  const usize capacity = block_count * (block_capacity - waste_per_block);
 
   return capacity;
 }

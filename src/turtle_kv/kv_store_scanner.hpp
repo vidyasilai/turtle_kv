@@ -138,6 +138,9 @@ class KVStoreScanner
   struct DeltaMemTableValueTag {
   };
 
+  struct BlockedLeafTag {
+  };
+
   //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
   //
   struct ScanLevel {
@@ -162,9 +165,6 @@ class KVStoreScanner
                        NodeScanState* node_state,
                        PackedBlockedLeafPage::BlockIterator leaf_block_iter,
                        PackedBlockedLeafPage::BlockIterator leaf_block_end) noexcept;
-
-    struct BlockedLeafTag {
-    };
 
     explicit ScanLevel(BlockedLeafTag,
                        const KVSlice& kv_slice,

@@ -846,7 +846,7 @@ template <bool kInsertHeap>
 
   this->active_levels_ = 1;
   ScanLevel& level =
-      kv_scanner.scan_levels_.emplace_back(ScanLevel::BlockedLeafTag{}, first_slice, this);
+      kv_scanner.scan_levels_.emplace_back(BlockedLeafTag{}, first_slice, this);
   if (kInsertHeap) {
 #if TURTLE_KV_PROFILE_QUERIES
     LatencyTimer timer{batt::Every2ToTheConst<8>{},

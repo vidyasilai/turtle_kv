@@ -118,7 +118,8 @@ using PackedSegment = PackedUpdateBuffer::Segment;
         segment.page_id_slot = llfs::PageIdSlot::from_page_id(packed_segment.leaf_page_id.unpack());
         segment.active_pivots = packed_segment.active_pivots.unpack();
 
-        segment.filter = PiecewiseFilter<u32>{packed_segment.get_filter(level)};
+        segment.filter =
+            PiecewiseFilter<u32>{packed_segment.get_packed_filter(level)};
 
         segment.check_invariants(__FILE__, __LINE__);
       }

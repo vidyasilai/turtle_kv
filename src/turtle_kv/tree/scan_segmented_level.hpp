@@ -61,8 +61,6 @@ auto scan_segmented_level(const NodeT& node,
                           i32 min_pivot_i = 0,
                           Optional<KeyView> min_key = None)
 {
-  namespace seq = batt::seq;
-
   using BlockLoader = std::remove_reference_t<BlockLoaderT>;
 
   // Deduce the filter type returned by Segment::get_filter.
@@ -71,10 +69,11 @@ auto scan_segmented_level(const NodeT& node,
       decltype(std::declval<const typename LevelT::Segment&>().get_filter(
           std::declval<const LevelT&>()))>;
 
-  // Heap-allocated state shared between the outer lambda and inner seqs. A single
-  // allocation provides a stable address for both the block loader (whose pointer is
-  // captured by inner seqs) and the filter (whose iterators are held by ShardedLiveRanges).
-  // Without stable addresses, moves of the Flatten pipeline would invalidate these.
+  // TODO [vsilai 2026-09-08] How to avoid heap allocation here?? 
+  // Heap-allocated state shared between the outer lambda and inner seqs. A single allocation 
+  // provides a stable address for both the block loader (whose pointer is captured by inner seqs)
+  // and the filter (whose iterators are held by ShardedLiveRanges). Without stable addresses,
+  // moves resulting from the sequence operation pipeline would invalidate these.
   //
   struct ScanState {
     BlockLoader block_loader;
